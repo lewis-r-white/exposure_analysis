@@ -1,0 +1,575 @@
+---
+title: "Weather Station Metrics"
+author: "Kholiswa Tsotetsi"
+date: "`r Sys.Date()`"
+output: 
+ html_document:
+    df_print: paged
+    theme: flatly
+    toc: true
+    toc_depth: 5
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##Load Dependencies
+
+library(dplyr)
+library(tidyr)
+library(xts)
+library(dygraphs)
+library(readr)
+library(data.table)
+library(climaemet)
+library(zentracloud)
+library(patchwork)  
+library(gt)
+library(gtsummary)
+library(stringr)
+library(ggplot2)
+
+###################################################################
+##  Aim: Weekly QC of Meteorological Data from weather stations  ##
+###################################################################
+
+```
+
+
+## Met Weather Station
+```{r, echo = FALSE}
+
+
+met <- list.files(path = "~/2025/", pattern = "*.csv",recursive = T,full.names = T) # file path to folder containing all files
+
+filepath_met <- file.path(met[length(met)]) #upload latest csv file (from previous week)
+met_updated  <- read_csv(filepath_met, col_names = TRUE ,show_col_types = FALSE)
+
+
+##Shorten Column Names for Combined Dataset
+
+#  [1] "Line#"                                                                  "Date"                                                                  
+#  [3] "Water Content (RXW-T11 21401736:21328357-1), m^3/m^3, khrc guest house" "Temperature (RXW-T11 21401736:21328357-2), *C, khrc guest house"       
+#  [5] "Gust Speed (S-WCG 21401736:20987000-2), m/s, khrc guest house"          "Wind Direction (S-WCG 21401736:20987000-3), *, khrc guest house"       
+#  [7] "Wind Speed (S-WCG 21401736:20987000-1), m/s, khrc guest house"          "Pressure (S-BPB 21401736:21441019-1), mbar, khrc guest house"          
+#  [9] "RH (S-THB 21401736:10675890-2), %, khrc guest house"                    "Temperature (S-THB 21401736:10675890-1), *C, khrc guest house"         
+# [11] "Dew Point (S-THB 21401736:10675890-3), *C, khrc guest house"            "Solar Radiation (S-LIB 21401736:21446264-1), W/m^2, khrc guest house"  
+
+#Water Content: soil moisture (volumetric water content) (https://www.onsetcomp.com/products/sensors/rxw-t11-xxx?srsltid=AfmBOooEEJUCLMRSGc8oQudiEUD2sAqL4hQTk4G0_EQOBuXvxqiVlTSs)
+
+colnames(met_updated) <- c("Line","Date","Water Content","Temperature-RXWT11","Gust Speed","WindDir","Wind Speed","Pressure","RH","Temperature-STHB","Dew Point","SolarRad")
+
+##Convert Date variable to PosixCT 
+met_updated$DateTime <- as.POSIXct(met_updated$Date, tz = "GMT", format = "%m/%d/%y %H:%M:%S")
+
+
+```
+
+*** 
+
+### Temperature 
+```{r, echo = FALSE}
+
+soiltemp <- xts(x= met_updated$`Temperature-RXWT11`, order.by = met_updated$DateTime) #temperature logged from HOBOnet T11 Soil moisture/Temp sensor (https://www.onsetcomp.com/products/sensors/rxw-t11-xxx)
+temp <- xts(x = met_updated$`Temperature-STHB`, order.by = met_updated$DateTime) #temp/rh smart sensor (https://www.onsetcomp.com/resources/documentation/11427-man-s-thb)
+
+
+temperaturebind <- cbind(soiltemp, temp)
+dygraph(temperaturebind, xlab="Time", y = "Temperature (in Celsius)")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+
+```
+
+*** 
+
+### Relative Humidity
+
+```{r, echo = FALSE}
+
+rh <- xts(x= met_updated$RH, order.by = met_updated$DateTime)
+
+dygraph(rh , xlab="Time", y = "Relative Humidity, %")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+
+***
+
+
+
+### DewPoint Temperature
+```{r, echo = FALSE}
+
+dew <- xts(x= met_updated$`Dew Point`, order.by = met_updated$DateTime)
+
+dygraph(dew , xlab="Time", y = "Dew Point, in Celsius")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+***  
+
+### Pressure
+```{r, echo = FALSE}
+
+met_updated$AtmPressure <- met_updated$Pressure/10 ## changed from mPA to kPA
+
+
+pressure <- xts(x= met_updated$AtmPressure, order.by = met_updated$DateTime)
+
+dygraph(pressure , xlab="Time", y = "Pressure, in kPA")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+***
+
+### Solar Radiation
+
+```{r, echo = FALSE}
+
+solar <- xts(x= met_updated$SolarRad, order.by = met_updated$DateTime)
+
+dygraph(solar, xlab="Time", y = "Solar Radiation")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+***  
+
+
+### Wind Speed and Direction
+```{r,echo = FALSE}
+
+WD <- xts(x= met_updated$WindDir, order.by = met_updated$DateTime)
+
+dygraph(WD, xlab="Time", y = "Wind Direction")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+met_updated$WindSpeed <- met_updated$`Wind Speed`
+
+
+
+WS <- xts(x= met_updated$`Wind Speed`, order.by = met_updated$DateTime)
+
+dygraph(WS, xlab="Time", y = "Wind Speed")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+met_updated$WindSpeed <- met_updated$`Wind Speed`
+
+
+## Set Missing Values to NA
+met_updated$`Wind Speed`[met_updated$`Wind Speed` == -888.88] = NA
+
+met_updated$WindDir[met_updated$WindDir == -888.88] = NA
+```
+***  
+
+
+### Wind Rose for Past Week
+
+```{r, echo = FALSE}
+
+
+  print(ggwindrose(
+  speed = met_updated$`Wind Speed`,
+  direction = met_updated$WindDir,
+  legend_title = "Wind speed (m/s)",
+  n_speeds = 5,
+  n_col = 1,
+  plot_title = "Met Weather Station "))
+
+  
+
+
+
+```
+
+
+****  
+
+## Zentra Weather Station
+
+```{r, echo = FALSE, message = FALSE,warning = FALSE}
+
+
+### Use API to pull Zentra data from previous week and write raw data to csv
+Sys.setenv(ZENTRACLOUD_TOKEN = "Token a4c8ce5a07e2453a7902892552af1d698f7916fa") #Enter API Key
+setZentracloudOptions(
+  token = Sys.getenv("ZENTRACLOUD_TOKEN")
+  , domain = "default"
+)
+
+
+devices <- c("A4100708","A4100531") #A4100531 : deployed in Techiman; A4100708 deployed in Kwabia
+
+Sys.setenv(TZ = 'Africa/Accra') #GMT for Ghana
+
+zentra_list <- list()
+
+for(device in devices){
+  
+zentra_data = getReadings(
+  device_sn = device
+  , start_time =  format(Sys.time() - lubridate::days(14), "%Y-%m-%d %H:%M:%S")
+  , end_time = format(Sys.time()-lubridate::days(7), "%Y-%m-%d %H:%M:%S")
+  , force_api = FALSE 
+)
+
+zentra_df <- bind_rows(zentra_data) #only one port in use, amend if more than one in the future
+zentra_df_select <- zentra_df %>% dplyr::select("timestamp_utc" ,"datetime","solar_radiation.value", "precipitation.value","drop_counts.value" ,"spoon_tips.value" ,"ec.value" ,"wind_direction.value" , "wind_speed.value" ,"gust_speed.value","air_temperature.value","vapor_pressure.value" ,"atmospheric_pressure.value", "tilt_angle.value" ,"min_air_temperature.value" ,"max_air_temperature.value", "rh_sensor_temp.value","max_precip_rate.value"    ,"vpd.value")
+
+colnames(zentra_df_select) <- c("Timestamps","DateTime","W.m2.Solar.Radiation","mm.Precipitation","Drop.Counts","Spoon.Tips","mS.cm.EC","degrees.Wind.Direction","m.s.Wind.Speed" ,"m.s.Gust.Speed", "C.Air.Temperature","kPa.Vapor.Pressure","kPa.Atmospheric.Pressure","Tilt.Angle","C.Min.Air.Temperature", "C.Max.Air.Temperature","C.RH.Sensor.Temp", "mm.h.Max.Precip.Rate"  ,   "kPa.VPD")
+
+zentra_df_select$location  = ifelse(device == "A4100708", "Kwabia","Techiman")
+zentra_list[[device]] <- zentra_df_select
+
+}
+
+zentra <- bind_rows(zentra_list)
+
+# Expected output: 
+#    colnames(zentra_data$A4100531_port1)
+#  [1] "timestamp_utc"                          "tz_offset"                              "datetime"                               "ec.value"                               "ec.error_flag"                         
+#  [6] "ec.error_description"                   "wind_direction.value"                   "wind_direction.error_flag"              "wind_direction.error_description"       "solar_radiation.value"                 
+# [11] "solar_radiation.error_flag"             "solar_radiation.error_description"      "wind_speed.value"                       "wind_speed.error_flag"                  "wind_speed.error_description"          
+# [16] "vapor_pressure.value"                   "vapor_pressure.error_flag"              "vapor_pressure.error_description"       "precipitation.value"                    "precipitation.error_flag"              
+# [21] "precipitation.error_description"        "spoon_tips.value"                       "spoon_tips.error_flag"                  "spoon_tips.error_description"           "gust_speed.value"                      
+# [26] "gust_speed.error_flag"                  "gust_speed.error_description"           "max_precip_rate.value"                  "max_precip_rate.error_flag"             "max_precip_rate.error_description"     
+# [31] "drop_counts.value"                      "drop_counts.error_flag"                 "drop_counts.error_description"          "atmospheric_pressure.value"             "atmospheric_pressure.error_flag"       
+# [36] "atmospheric_pressure.error_description" "vpd.value"                              "vpd.error_flag"                         "vpd.error_description"                  "tilt_angle.value"                      
+# [41] "tilt_angle.error_flag"                  "tilt_angle.error_description"           "air_temperature.value"                  "air_temperature.error_flag"             "air_temperature.error_description"     
+# [46] "min_air_temperature.value"              "min_air_temperature.error_flag"         "min_air_temperature.error_description"  "max_air_temperature.value"              "max_air_temperature.error_flag"        
+# [51] "max_air_temperature.error_description"  "rh_sensor_temp.value"                   "rh_sensor_temp.error_flag"              "rh_sensor_temp.error_description"      
+
+zentra$timestamps <- as.POSIXct(zentra$DateTime, format = "%Y-%m-%d %T+00:00", tz = "GMT")
+
+
+zentra_week <- zentra[zentra$timestamps >= min(met_updated$DateTime) & zentra$timestamps <= max(met_updated$DateTime),]
+
+
+```
+
+***  
+
+
+### Temperature
+```{r, echo = FALSE}
+
+techiman <- xts(x= zentra_week$C.Air.Temperature[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia  <- xts(x= zentra_week$C.Air.Temperature[zentra_week$location == "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location == "Kwabia"])
+  
+temp <- cbind(techiman, kwabia)
+
+dygraph(temp , xlab="Time", y = "Temperature, in Celsius")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+```
+
+
+***
+### Relative Humidity
+```{r, echo = FALSE}
+
+#Magnus-Tetens formula (https://andrewsforest.oregonstate.edu/sites/default/files/lter/data/studies/ms01/dewpt_vpd_calculations.pdf)
+
+# Vapor Pressure Deficit = es‐ea = es‐(Rh*es/100) at any instant.
+# 
+# zentra_week$es <- as.numeric(zentra_week$kPa.VPD) + as.numeric(zentra_week$kPa.Vapor.Pressure)
+# zentra_week$RH <- (as.numeric(zentra_week$kPa.Vapor.Pressure)/zentra_week$es) * 100
+
+zentra_week$es_calc <-  round((6.1078 * exp(((17.269*as.numeric(zentra_week$C.Air.Temperature))/(237.3+as.numeric(zentra_week$C.Air.Temperature))))/10),3)
+
+zentra_week$RH_ <- round(((as.numeric(zentra_week$kPa.Vapor.Pressure)/zentra_week$es_calc) * 100),1)
+
+##Both measures are nearly identical to calculate relative humidity
+
+
+techiman <- xts(x= zentra_week$RH_[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia <- xts(x= zentra_week$RH_[zentra_week$location == "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location == "Kwabia"])
+  
+rh <- cbind(techiman, kwabia)  
+dygraph(rh , xlab="Time", y = "Relative Humidity, %")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+***
+
+### Pressure
+```{r, echo = FALSE}
+
+techiman <- xts(x= zentra_week$kPa.Atmospheric.Pressure[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia <- xts(x= zentra_week$kPa.Atmospheric.Pressure[zentra_week$location == "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location == "Kwabia"])
+  
+  
+pressure <- cbind(techiman, kwabia)
+dygraph(pressure , xlab="Time", y = "Atmospheric Pressure, in kPA")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+***  
+
+
+### Solar Radiation
+```{r, echo = FALSE}
+techiman <- xts(x= zentra_week$W.m2.Solar.Radiation[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia <- xts(x= zentra_week$W.m2.Solar.Radiation[zentra_week$location ==  "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location ==  "Kwabia"])
+# solar <- xts(x= zentra_week$W.m..Solar.Radiation, order.by = zentra_week$DateTime)
+
+
+solar <- cbind(techiman, kwabia)
+dygraph(solar, xlab="Time", y = "Solar Radiation")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+```
+
+
+***     
+
+
+### Wind Speed and Direction 
+
+```{r, echo = FALSE}
+techiman <- xts(x= zentra_week$degrees.Wind.Direction[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia <- xts(x= zentra_week$degrees.Wind.Direction[zentra_week$location ==  "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location ==  "Kwabia"])
+# wd <- xts(x= zentra_week$X..Wind.Direction, order.by = zentra_week$DateTime)
+
+
+wd <- cbind(techiman, kwabia)
+dygraph(wd , xlab="Time", y = "Wind Direction")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+
+# ws <- xts(x= zentra_week$m.s.Wind.Speed, order.by = zentra_week$DateTime)
+techiman <- xts(x= zentra_week$m.s.Wind.Speed[zentra_week$location ==  "Techiman"], order.by = zentra_week$timestamps[zentra_week$location ==  "Techiman"])
+kwabia <- xts(x= zentra_week$m.s.Wind.Speed[zentra_week$location ==  "Kwabia"], order.by = zentra_week$timestamps[zentra_week$location ==  "Kwabia"])
+
+ws <- cbind(techiman, kwabia)
+dygraph(ws , xlab="Time", y = "Wind Speed, m/s")%>%dyHighlight(highlightCircleSize = 1.5, 
+              highlightSeriesBackgroundAlpha = 0.1,
+              hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+
+
+
+```
+
+***  
+
+
+### Wind Rose for Past Week
+
+```{r, echo = FALSE}
+
+
+  print(ggwindrose(
+  speed = zentra_week$m.s.Wind.Speed[zentra_week$location ==  "Techiman"],
+  direction = zentra_week$degrees.Wind.Direction[zentra_week$location ==  "Techiman"],
+  legend_title = "Wind speed (m/s)",
+  n_speeds = 5,
+  n_col = 1,
+  plot_title = "Zentra Weather Station - Techiman"))
+
+  
+
+  print(ggwindrose(
+  speed = zentra_week$m.s.Wind.Speed[zentra_week$location ==  "Kwabia"],
+  direction = zentra_week$degrees.Wind.Direction[zentra_week$location ==  "Kwabia"],
+  legend_title = "Wind speed (m/s)",
+  n_speeds = 5,
+  n_col = 1,
+  plot_title = "Zentra Weather Station - Kwabia "))
+
+  
+
+
+```
+
+
+***
+
+
+## Correlation Between Two Monitors
+
+```{r, echo = FALSE}
+
+met_updated_ <- met_updated[,c(1:12,14,15,13)]
+met_updated_$WindSpeed[met_updated_$WindSpeed == -888.88] = NA
+colnames(met_updated_)[3] = "WaterContent" #change name of 'Water Content' variable to match below
+## Aggregate to 15-minute intervals to match Zentra timestamps
+hobo_met_aggregate <- met_updated_ %>% 
+  dplyr::mutate(interval = lubridate::ceiling_date(DateTime, "15 minutes")) %>% 
+  group_by(interval) %>% 
+  dplyr::summarise_at(vars(WaterContent:WindSpeed), mean, na.rm = TRUE)
+
+hobo_met_aggregate$location = "KHRC"
+
+bothstations <- full_join(zentra_week, hobo_met_aggregate, by = c("timestamps" = "interval"))
+
+#Shorten column names ( verify correct column order)
+# colnames(bothstations)
+
+names(bothstations)[3] = "SolarRad_zentra"
+names(bothstations)[8] = "WD_zentra"
+names(bothstations)[9] = "WS_zentra"
+names(bothstations)[10] = "Gust_zentra"
+names(bothstations)[11] = "Temp_zentra"
+names(bothstations)[13] = "AtmPressure_zentra"
+names(bothstations)[23] = "RH_zentra"
+names(bothstations)[26] = "Gust_met"
+names(bothstations)[31] = "Temp_met"
+
+
+metrics <- c("Temperature","Solar Radiation","Wind Direction","Wind Speed","Gust Speed","Atmospheric Pressure (kPA)","RH")
+
+tabledf <- data.frame(
+  
+  measure = rep(NA, length(metrics)),
+  slope = rep(NA, length(metrics)),
+  intercept = rep(NA, length(metrics)),
+  R2 = rep(NA, length(metrics)),
+  RMSE = rep(NA, length(metrics)),
+  n = rep(NA, length(metrics))
+)
+
+
+correlation_list <- c("Temp_zentra ~ Temp_met","SolarRad_zentra ~ SolarRad","WD_zentra ~ WindDir","WS_zentra ~ WindSpeed","Gust_zentra ~ Gust_met","AtmPressure_zentra ~ AtmPressure","RH_zentra ~ RH") #Ensure this is in the same order as the metrics list above
+
+
+## Temp
+locations <- c("Kwabia","Techiman")
+
+for(location in locations){
+  
+bothstations_df <- bothstations[!bothstations$location.x %in% location, ]
+
+for(i in 1:length(correlation_list)){
+  
+fit <- lm(paste0(correlation_list[i]),data = bothstations_df )
+  
+rmse <- round(sqrt(mean(resid(fit)^2)), 4)
+coefs <- coef(fit)
+b0 <- round(coefs[1], 2)
+b1 <- round(coefs[2],2)
+r2 <- round(summary(fit)$r.squared, 2)
+n <- nrow(bothstations)
+    
+eqn <- bquote(italic(y) == .(b0) + .(b1)*italic(x) * "," ~~ 
+                  r^2 == .(r2) * "," ~~ RMSE == .(rmse) * "," ~~ n == .(n))
+
+tabledf$measure[i] <- unique(metrics[i])
+tabledf$slope[i] <- b1
+tabledf$intercept[i] <- b0
+tabledf$R2[i] <- r2
+tabledf$RMSE[i] <- rmse
+tabledf$n[i] <- n
+
+
+}
+
+
+print(gt(tabledf)|> tab_header(title = paste0("Comparison between ",  unique(bothstations_df$location.x[!is.na(bothstations_df$location.x)]), " and ",unique(bothstations_df$location.y))))
+}
+
+
+
+```
+
+***   
+
+### Comparison Time Series
+```{r, echo = FALSE, warning = FALSE, message  = FALSE}
+
+for(location in locations){
+
+   bothstations_df <- bothstations[bothstations$location.x != location, ]
+
+  
+  for(i in 1:length(correlation_list)){
+    
+    
+    if(i == 3){
+      
+
+      zentra_ws <- str_extract(correlation_list[4], "[^~]+")
+      zentra_wd <- str_extract(correlation_list[i], "[^~]+")
+
+      met_ws <- str_extract(correlation_list[4], "(?<=~).*")
+      met_wd <- str_extract(correlation_list[i], "(?<=~).*")
+
+
+      zentra <- ggwindrose(
+   speed = bothstations_df[[str_trim(zentra_ws, "right")]],
+   direction = bothstations_df[[str_trim(zentra_wd, "right")]],
+   legend_title = "Wind speed (m/s)",
+   n_speeds = 5,
+   n_col = 1,
+   plot_title = paste0("Zentra Weather Station: ",unique(bothstations_df$location.x[!is.na(bothstations_df$location.x)]) ))
+
+
+      met <- ggwindrose(
+  speed =  bothstations_df[[str_trim(met_ws, "left")]],
+  direction = bothstations_df[[str_trim(met_wd, "left")]],
+  legend_title = "Wind speed (m/s)",
+  n_speeds = 5,
+  n_col = 1,
+  plot_title = "Met Weather Station ")
+
+print(zentra+met)
+
+    } else if( i %in% c(4,5)){
+      
+      next
+      
+    }else{
+      
+    zentra_metric <- str_extract(correlation_list[i], "[^~]+")
+    met_metric <- str_extract(correlation_list[i], "(?<=~).*")
+    
+    colors <- c("Zentra" = "blue", "HOBO" = "red")
+    print(ggplot(aes(x = timestamps), data =  bothstations_df)+geom_line(aes(y = bothstations_df[[str_trim(zentra_metric,"right")]]), color = colors[1])+geom_line(aes(y= bothstations_df[[str_trim(met_metric, "left")]]), color = colors[2])+theme_bw()+ylab(metrics[i])+ ggtitle(paste0("Comparing ", unique(bothstations_df$location.x[!is.na(bothstations_df$location.x)]), " and ", unique(bothstations_df$location.y),"\nfor: ", metrics[i])))
+    
+
+cat("\n")
+cat("\n")
+cat("\n")
+ 
+
+    
+  }
+}
+
+
+
+}
+
+```
+
+***
+
+
+

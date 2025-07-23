@@ -1,0 +1,587 @@
+---
+title: "UPAS Review"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    self_contained: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load Dependencies 
+library(gtsummary)
+library(dplyr)
+library(gt)
+library(ggplot2)
+library(xts)
+library(dygraphs)
+library(plotly)
+library(DT)
+library(data.table)
+library(tidyverse)
+library(htmltools)
+
+```
+
+
+# Deployment Summaries
+```{r, echo = FALSE, results='asis'}
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/processed"
+
+#Direct to deployment summary files (.csv files)
+summaries <- list.files(path,
+                        pattern = "*.csv", full.names = F,recursive = TRUE)
+
+
+tables <- list()
+
+for(i in 1:length(summaries)){
+  
+  community_name <- gsub("pm_summary_upas_|\\d{8}\\.csv", "", summaries[i])
+  cat(paste0("\n\n## Community: ", community_name, "\n\n"))
+
+  
+pm_summary_upas <- read.csv(file.path(path,summaries[i]))[-1]
+
+pm_summary_upas$start_time <- as.POSIXct(pm_summary_upas$start_time)
+pm_summary_upas$end_time <- as.POSIXct(pm_summary_upas$end_time)
+
+
+#buttons = c('csv'),lengthMenu = list(c(10,25,50,-1),c(10,25,50,"All")
+#"Buttons"
+#'Blfrtip',
+ 
+tables[[i]] <- print(DT::datatable(pm_summary_upas,
+  caption = paste0("Community: ", community_name), 
+        extensions = c("FixedColumns", "FixedHeader"), options = list( 
+  scrollX = TRUE,
+  dom =  'Blfrtip',
+  fixedHeader = T,
+  fixedColumns = list(leftColumns = c(3)))) %>% formatStyle(
+  'run_time_hour',
+  backgroundColor = styleInterval(44,c("red","white")))%>% formatStyle(
+  'pm_max',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'pm_median',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'pm_mean',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'temp_min',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'temp_max',
+  backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
+  'temp_mean',
+  backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
+  'rh_min',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'rh_max',
+  backgroundColor = styleInterval(99,c("white","red")))%>% formatStyle(
+  'flow_max',
+  backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
+  'flow_mean',
+  backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
+  'flow_mean',
+  backgroundColor = styleInterval(0.960,c("red","white")))%>% formatStyle(
+  'compliance_hours_day_session1',
+  backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
+  'compliance_hours_day_session2',
+  backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
+  'compliance_hours_night_session1',
+  backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
+  'compliance_hours_night_session2',
+  backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
+  'duplicate_subject',
+  backgroundColor = styleEqual("Yes",c("red")))%>% formatStyle(
+  'shutdownmode',
+  backgroundColor = styleEqual("Contact ATS for Support",c("red"))))
+
+}
+
+htmltools::tagList(tables)
+
+```
+
+
+# Individual Time Series
+
+## PM 2.5
+
+```{r, echo = FALSE, results='asis', warning = FALSE, message = FALSE, fig.keep='all'}
+library(dplyr)
+library(plotly)
+library(data.table)  # for rleid()
+library(RColorBrewer)
+
+# Set the path where your .rds files are
+path <- here::here("weekly_data_checks", "upas_data2025", "processed")
+
+# Get list of RDS files
+rds_files <- list.files(path, pattern = "\\.rds$", full.names = TRUE)
+
+
+all_plots <- list()
+
+# Loop through each file (i.e., each community)
+for (file in rds_files) {
+
+  # Extract community name from file name
+  community_name <- gsub("list\\.upas_|\\d{8}\\.rds", "", basename(file))
+  
+  cat(paste0("\n\n## Community: ", community_name, "\n\n"))
+
+
+  # Read the list of tibbles
+  upas_list <- readRDS(file)
+  
+  # Select only relevant columns from each tibble (e.g., timestamp, PM2.5, compliance, subject ID)
+  upas_list <- lapply(upas_list, function(df) {
+    df %>%
+      select(timestamp, PM2_5MC_clean, compliance, subject_id, UPASserial)
+    })
+
+  # Combine all participant data
+  upas_combined <- bind_rows(upas_list)
+
+  # Ensure timestamp and compliance are formatted correctly
+  upas_combined <- upas_combined %>%
+    mutate(
+      timestamp = as.POSIXct(timestamp),
+      compliance = as.numeric(as.character(compliance))  # if stored as factor/char
+    )
+
+  # Assign a color per subject (dynamically)
+  participants <- unique(upas_combined$subject_id)
+  palette <- RColorBrewer::brewer.pal(min(length(participants), 8), "Set1")
+  if (length(participants) > 8) {
+    palette <- colorRampPalette(palette)(length(participants))  # expand palette if needed
+  }
+  colors <- setNames(palette, participants)
+
+  # Initialize plot
+  plot_combined <- plot_ly()
+
+  for (id in participants) {
+  df_participant <- filter(upas_combined, subject_id == id) %>%
+    arrange(timestamp) %>%
+    mutate(
+      group = data.table::rleid(compliance),
+      subject_label = paste0(subject_id, " (", UPASserial, ")") 
+    )
+
+  for (g in unique(df_participant$group)) {
+    df_segment <- df_participant %>% filter(group == g)
+
+    opacity_val <- ifelse(unique(df_segment$compliance) == 1, 1, 0.3)
+
+    plot_combined <- plot_combined %>%
+      add_trace(
+        data = df_segment,
+        x = ~timestamp,
+        y = ~as.numeric(PM2_5MC_clean),
+        type = 'scatter',
+        mode = 'lines',
+        name = id,
+        line = list(width = 1.5, color = colors[id]),
+        opacity = opacity_val,
+        text = ~paste0("Participant: ", subject_label,
+                       "<br>Time: ", timestamp,
+                       "<br>PM2.5: ", round(PM2_5MC_clean, 1),
+                       "<br>Compliance: ", compliance),
+        hoverinfo = "text",
+        legendgroup = id,
+        showlegend = g == min(df_participant$group)
+      )
+  }
+}
+
+  # Final layout
+  plot_combined <- plot_combined %>%
+    layout(
+      title = paste("PM2.5 Time Series with Compliance -", community_name),
+      xaxis = list(title = "Timestamp"),
+      yaxis = list(title = "PM2.5 (µg/m³)"),
+      legend = list(title = list(text = "<b>Participant</b>")),
+      hovermode = "closest"
+    )
+
+  # Wrap in a div with header and store it
+  all_plots[[community_name]] <- htmltools::tagList(
+    htmltools::tags$h3(paste("Community:", community_name)),
+    plot_combined,
+    htmltools::tags$hr()
+  )
+}
+
+# Display all plots at once
+htmltools::tagList(all_plots)
+```
+
+
+
+
+## PM 2.5 and Flow Rate Time Series
+
+```{r, echo = FALSE, results='asis', warning = FALSE, message = FALSE, fig.keep='all'}
+library(dplyr)
+library(plotly)
+library(data.table)  # for rleid()
+library(RColorBrewer)
+
+path <- here::here("weekly_data_checks", "upas_data2025", "processed")
+rds_files <- list.files(path, pattern = "\\.rds$", full.names = TRUE)
+
+all_plots <- list()
+
+for (file in rds_files) {
+  community_name <- gsub("list\\.upas_|\\d{8}\\.rds", "", basename(file))
+  #cat(paste0("\n\n## Community: ", community_name, "\n\n"))
+
+  upas_list <- readRDS(file)
+
+  upas_list <- lapply(upas_list, function(df) {
+    df %>%
+      select(timestamp, PM2_5MC_clean, PumpingFlowRate_clean, compliance, subject_id, UPASserial)
+  })
+
+  upas_combined <- bind_rows(upas_list) %>%
+    mutate(
+      timestamp = as.POSIXct(timestamp),
+      compliance = as.numeric(as.character(compliance))
+    )
+
+  participants <- unique(upas_combined$subject_id)
+  palette <- RColorBrewer::brewer.pal(min(length(participants), 8), "Set1")
+  if (length(participants) > 8) {
+    palette <- colorRampPalette(palette)(length(participants))
+  }
+  colors <- setNames(palette, participants)
+
+  # -------- PM2.5 Plot --------
+  plot_pm <- plot_ly()
+  for (id in participants) {
+    df_participant <- filter(upas_combined, subject_id == id) %>%
+      arrange(timestamp) %>%
+      mutate(
+        group = data.table::rleid(compliance),
+        subject_label = paste0(subject_id, " (", UPASserial, ")")
+      )
+    
+    for (g in unique(df_participant$group)) {
+      df_segment <- df_participant %>% filter(group == g)
+      opacity_val <- ifelse(unique(df_segment$compliance) == 1, 1, 0.3)
+
+      plot_pm <- plot_pm %>%
+        add_trace(
+          data = df_segment,
+          x = ~timestamp,
+          y = ~as.numeric(PM2_5MC_clean),
+          type = 'scatter',
+          mode = 'lines',
+          name = id,
+          line = list(width = 1.5, color = colors[id]),
+          opacity = opacity_val,
+          text = ~paste0("Participant: ", subject_label,
+                         "<br>Time: ", timestamp,
+                         "<br>PM2.5: ", round(PM2_5MC_clean, 1),
+                         "<br>Compliance: ", compliance),
+          hoverinfo = "text",
+          legendgroup = id,
+          showlegend = g == min(df_participant$group)
+        )
+    }
+  }
+
+  plot_pm <- plot_pm %>%
+    layout(
+      title = paste("PM2.5 Time Series with Compliance -", community_name),
+      xaxis = list(title = "Timestamp"),
+      yaxis = list(title = "PM2.5 (µg/m³)"),
+      legend = list(title = list(text = "<b>Participant</b>")),
+      hovermode = "closest"
+    )
+
+  # -------- Flow Rate Plot --------
+  plot_flow <- plot_ly()
+  for (id in participants) {
+    df_participant <- filter(upas_combined, subject_id == id) %>%
+      arrange(timestamp) %>%
+      mutate(
+        group = data.table::rleid(compliance),
+        subject_label = paste0(subject_id, " (", UPASserial, ")")
+      )
+
+    for (g in unique(df_participant$group)) {
+      df_segment <- df_participant %>% filter(group == g)
+      opacity_val <- ifelse(unique(df_segment$compliance) == 1, 1, 0.3)
+
+      plot_flow <- plot_flow %>%
+        add_trace(
+          data = df_segment,
+          x = ~timestamp,
+          y = ~as.numeric(PumpingFlowRate_clean),
+          type = 'scatter',
+          mode = 'lines',
+          name = id,
+          line = list(width = 1.5, color = colors[id]),
+          opacity = opacity_val,
+          text = ~paste0("Participant: ", subject_label,
+                         "<br>Time: ", timestamp,
+                         "<br>Flow Rate: ", round(PumpingFlowRate_clean, 3),
+                         "<br>Compliance: ", compliance),
+          hoverinfo = "text",
+          legendgroup = id,
+          showlegend = g == min(df_participant$group)
+        )
+    }
+  }
+
+  plot_flow <- plot_flow %>%
+    layout(
+      title = paste("Flow Rate Time Series with Compliance -", community_name),
+      xaxis = list(title = "Timestamp"),
+      yaxis = list(title = "Flow Rate (L/min)"),
+      legend = list(title = list(text = "<b>Participant</b>")),
+      hovermode = "closest"
+    )
+
+  # Append both plots to output
+  all_plots[[community_name]] <- htmltools::tagList(
+    htmltools::tags$h3(paste("Community:", community_name, "- PM2.5")),
+    plot_pm,
+    htmltools::tags$h3(paste("Community:", community_name, "- Flow Rate")),
+    plot_flow,
+    htmltools::tags$hr()
+  )
+}
+
+# Final display
+htmltools::tagList(all_plots)
+
+```
+
+
+
+
+
+```{r, echo = FALSE, results='asis', warning = FALSE, message = FALSE, fig.keep='all'}
+## code graveyard
+
+
+
+## original without compliance 
+
+# library(plotly)
+# 
+# # Load the data 
+# upas_list <- readRDS(here::here("weekly_data_checks", "upas_data2025", "processed", "list.upas_asantekwa20250626.rds"))
+# 
+# # Combine all participant data into one data frame
+# upas_combined <- bind_rows(upas_list)
+# 
+# # Create the interactive plotly plot
+# plot_combined <- plot_ly()
+# 
+# for (id in unique(upas_combined$subject_id)) {
+#   plot_combined <- plot_combined %>%
+#     add_trace(
+#       data = filter(upas_combined, subject_id == id),
+#       x = ~timestamp,
+#       y = ~as.numeric(PM2_5MC_clean),
+#       type = 'scatter',
+#       mode = 'lines',
+#       name = id,
+#       text = ~paste("Time:", timestamp,
+#                     "<br>PM2.5:", round(as.numeric(PM2_5MC_clean), 1)),
+#       hoverinfo = "text"
+#     )
+# }
+# 
+# # Add layout and display options
+# plot_combined <- plot_combined %>%
+#   layout(
+#     title = "PM2.5 Time Series by Participant",
+#     xaxis = list(title = "Timestamp"),
+#     yaxis = list(title = "PM2.5 (µg/m³)"),
+#     legend = list(title = list(text = "<b>Participant</b>")),
+#     hovermode = "closest"
+#   )
+# 
+# # Display the plot
+# plot_combined
+
+
+
+
+
+
+
+
+# just one community at a time
+
+# library(dplyr)
+# library(plotly)
+# library(data.table) # for rleid()
+# 
+# upas_list <- readRDS(here::here("weekly_data_checks", "upas_data2025", "processed", "list.upas_asantekwa20250626.rds"))
+# 
+# # Combine
+# upas_combined <- bind_rows(upas_list)
+# 
+# # Assign a unique color per subject
+# participants <- unique(upas_combined$subject_id)
+# palette <- RColorBrewer::brewer.pal(min(length(participants), 8), "Set1")
+# colors <- setNames(palette, participants)
+# 
+# # Initialize plot
+# plot_combined <- plot_ly()
+# 
+# # Loop through participants
+# for (id in participants) {
+#   df_participant <- filter(upas_combined, subject_id == id)
+#   
+#   # Split into segments where compliance is constant
+#   df_participant <- df_participant %>%
+#     arrange(timestamp) %>%
+#     mutate(group = data.table::rleid(compliance))  # run-length ID
+# 
+#   groups <- unique(df_participant$group)
+# 
+#   for (g in groups) {
+#     df_segment <- df_participant %>% filter(group == g)
+# 
+#     opacity_val <- ifelse(unique(df_segment$compliance) == 1, 1, 0.3)
+# 
+#     plot_combined <- plot_combined %>%
+#       add_trace(
+#         data = df_segment,
+#         x = ~timestamp,
+#         y = ~as.numeric(PM2_5MC_clean),
+#         type = 'scatter',
+#         mode = 'lines',
+#         name = id,
+#         line = list(width = 1.5, color = colors[id]),
+#         opacity = opacity_val,
+#         text = ~paste0("Participant: ", id,
+#                        "<br>Time: ", timestamp,
+#                        "<br>PM2.5: ", round(PM2_5MC_clean, 1),
+#                        "<br>Compliance: ", compliance),
+#         hoverinfo = "text",
+#         legendgroup = id,
+#         showlegend = g == min(groups) # show only once per participant
+#       )
+#   }
+# }
+# 
+# # Final layout
+# plot_combined <- plot_combined %>%
+#   layout(
+#     title = "PM2.5 Time Series by Participant with Compliance Transparency",
+#     xaxis = list(title = "Timestamp"),
+#     yaxis = list(title = "PM2.5 (µg/m³)"),
+#     legend = list(title = list(text = "<b>Participant</b>")),
+#     hovermode = "closest"
+#   )
+# 
+# plot_combined
+
+
+
+
+
+## dropdown 
+
+# 
+# 
+# library(dplyr)
+# library(purrr)
+# 
+# # If your list is named `upas_list`
+# df <- bind_rows(upas_list, .id = "list_id") %>%
+#   mutate(subject = paste0(subject_id, " (", UPASserial, ")"))
+# 
+# 
+# library(plotly)
+# 
+# # Unique subjects
+# subjects <- unique(df$subject)
+# 
+# # Create traces: one per subject
+# traces <- map(subjects, function(subj) {
+#   df_sub <- df %>% filter(subject == subj)
+# 
+#   list(
+#     list(
+#       x = df_sub$timestamp,
+#       y = df_sub$PM2_5MC_clean,
+#       type = "scatter",
+#       mode = "lines",
+#       name = subj,
+#       visible = TRUE,  # only first one will be TRUE initially
+#       line = list(width = 1.5)
+#     )
+#   )
+# })
+# 
+# 
+# traces <- map(subjects, function(subj) {
+#   df_sub <- df %>% filter(subject == subj)
+# 
+#   list(
+#     x = df_sub$timestamp,
+#     y = df_sub$PM2_5MC_clean,
+#     type = "scatter",
+#     mode = "lines",
+#     name = subj,
+#     visible = FALSE,  # all hidden initially; we'll enable the first later
+#     line = list(width = 1.5)
+#   )
+# })
+# 
+# traces[[1]]$visible <- TRUE
+# 
+# 
+# # Create buttons for dropdown menu
+# buttons <- map2(subjects, seq_along(subjects), function(subj, idx) {
+#   vis_vec <- rep(FALSE, length(subjects))
+#   vis_vec[idx] <- TRUE
+# 
+#   list(
+#     method = "restyle",
+#     args = list("visible", vis_vec),
+#     label = subj
+#   )
+# })
+# 
+# # Create the plot
+# p <- plot_ly()
+# 
+# for (trace in traces) {
+#   p <- do.call(add_trace, c(list(p), trace))
+# }
+# 
+# p <- layout(p,
+#   title = "PM2.5 Time Series by Participant",
+#   xaxis = list(title = "Time"),
+#   yaxis = list(title = "PM2.5 (µg/m³)"),
+#   updatemenus = list(
+#     list(
+#       type = "dropdown",
+#       active = 0,
+#       buttons = buttons,
+#       x = -0.05,
+#       y = 1.1
+#     )
+#   )
+# )
+# 
+# p
+
+```
+

@@ -1,0 +1,206 @@
+---
+title: "UPAS Review"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load Dependencies 
+library(gtsummary)
+library(dplyr)
+library(gt)
+library(ggplot2)
+library(xts)
+library(dygraphs)
+library(plotly)
+library(DT)
+library(data.table)
+library(tidyverse)
+library(htmltools)
+
+```
+
+
+# Deployment Summaries
+```{r, echo = FALSE, results='asis'}
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/processed"
+
+#Direct to deployment summary files (.csv files)
+summaries <- list.files(path,
+                        pattern = "*.csv", full.names = F,recursive = TRUE)
+
+
+tables <- list()
+
+for(i in 1:length(summaries)){
+  
+  community_name <- gsub("pm_summary_upas_|\\d{8}\\.csv", "", summaries[i])
+  cat(paste0("## Community: ", community_name))
+
+  cat("\n")
+  cat("\n")
+  cat("\n")
+  
+pm_summary_upas <- read.csv(file.path(path,summaries[i]))[-1]
+
+pm_summary_upas$start_time <- as.POSIXct(pm_summary_upas$start_time)
+pm_summary_upas$end_time <- as.POSIXct(pm_summary_upas$end_time)
+
+
+#buttons = c('csv'),lengthMenu = list(c(10,25,50,-1),c(10,25,50,"All")
+#"Buttons"
+#'Blfrtip',
+ 
+tables[[i]] <- print(DT::datatable(pm_summary_upas,
+  caption = paste0("Community: ", community_name), 
+        extensions = c("FixedColumns", "FixedHeader"), options = list( 
+  scrollX = TRUE,
+  dom =  'Blfrtip',
+  fixedHeader = T,
+  fixedColumns = list(leftColumns = c(3)))) %>% formatStyle(
+  'run_time_hour',
+  backgroundColor = styleInterval(44,c("red","white")))%>% formatStyle(
+  'pm_max',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'pm_median',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'pm_mean',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'temp_min',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'temp_max',
+  backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
+  'temp_mean',
+  backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
+  'rh_min',
+  backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
+  'rh_max',
+  backgroundColor = styleInterval(99,c("white","red")))%>% formatStyle(
+  'flow_max',
+  backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
+  'flow_mean',
+  backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
+  'flow_mean',
+  backgroundColor = styleInterval(0.960,c("red","white")))%>% formatStyle(
+  'compliance_hours_day_session1',
+  backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
+  'compliance_hours_day_session2',
+  backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
+  'compliance_hours_night_session1',
+  backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
+  'compliance_hours_night_session2',
+  backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
+  'duplicate_subject',
+  backgroundColor = styleEqual("Yes",c("red")))%>% formatStyle(
+  'shutdownmode',
+  backgroundColor = styleEqual("Contact ATS for Support",c("red"))))
+
+}
+
+htmltools::tagList(tables)
+
+
+```
+
+
+# Individual Time Series
+```{r, echo = FALSE, results ='asis',warning = FALSE, message = FALSE}
+pm25 <- list()
+
+rt <- list.files(path,pattern = "*.rds", full.names = F,recursive = TRUE)
+
+for(j in 1:length(rt)){
+  
+  community_name <- gsub("list\\.upas_|\\d{8}\\.rds", "", rt[j])
+  cat(paste0("## Community: ", community_name))
+
+  cat("\n")
+  cat("\n")
+  cat("\n")
+  
+    rt_rds <- readRDS(file.path(path,rt[j])) 
+
+  for(i in 1:length(rt_rds)){
+    
+  rt_rds[[i]]$AtmoT_clean <- as.numeric(rt_rds[[i]]$AtmoT_clean)
+  rt_rds[[i]]$PM2_5MC_clean <- as.numeric(rt_rds[[i]]$PM2_5MC_clean)
+  rt_rds[[i]]$LUX <- as.numeric(rt_rds[[i]]$LUX)
+  rt_rds[[i]]$AtmoRH_clean <- as.numeric(rt_rds[[i]]$AtmoRH_clean)
+  rt_rds[[i]]$PumpingFlowRate_clean <- as.numeric(rt_rds[[i]]$PumpingFlowRate_clean)
+  # rt_rds[[i]]$PumpingFlowFactory_clean <- as.numeric(rt_rds[[i]]$PumpingFlowFactory_clean) #if new firmware
+
+  
+  cat(paste0("### Participant: ",unique(rt_rds[[i]]$subject_id)))
+  cat("\n")
+  cat("\n")
+  cat(paste0("UPAS ID: ", unique(rt_rds[[i]]$UPASserial)))
+  cat("\n")
+  cat("\n")
+
+     rt_rds[[i]]$timestamp <- as.POSIXct(rt_rds[[i]]$timestamp)
+     rt_rds[[i]]$compliance <- as.factor(rt_rds[[i]]$compliance)
+
+     pm2_5 <- xts(rt_rds[[i]]$PM2_5MC_clean[!is.na(rt_rds[[i]]$timestamp)], order.by = rt_rds[[i]]$timestamp[!is.na(rt_rds[[i]]$timestamp)])
+     
+     
+     
+     pm25[[i]] <- print(dygraph(pm2_5, main = paste0("UPAS ID: ",unique(rt_rds[[i]]$UPASserial))))
+
+ rt_rds[[i]]$timestamp <- as.POSIXct(ifelse(is.na(rt_rds[[i]]$timestamp), as.POSIXct(rt_rds[[i]]$DateTimeLocal, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"), rt_rds[[i]]$timestamp ))
+
+    print(ggplot(rt_rds[[i]], aes(x = timestamp,  y = PM2_5MC_clean))+geom_line()+ylab("PM2.5 Concentration") +geom_tile(data = rt_rds[[i]],aes(y = 0,height = Inf, fill = compliance), alpha = 0.5)+ scale_fill_manual(breaks = levels(rt_rds[[i]]$compliance),values = c("grey99","red"))+ scale_y_continuous(labels = scales::comma)+  ggtitle("PM2.5 Time Series")+theme_bw(base_size = 14))
+    cat("\n")
+    cat("\n")
+    cat("\n")
+        
+
+    print(ggplot(rt_rds[[i]], aes(x = timestamp,  y = LUX))+geom_line()+ylab("Illuminance") +geom_tile(data = rt_rds[[i]],aes(y = 0,height = Inf, fill = compliance), alpha = 0.5)+
+  scale_fill_manual(breaks = levels(rt_rds[[i]]$compliance),
+                    values = c("grey99","red"))+ scale_y_continuous(labels = scales::comma)+  ggtitle("Illuminance")+theme_bw(base_size = 14))
+    cat("\n")
+    cat("\n")
+    cat("\n")
+    
+    print(ggplot(rt_rds[[i]], aes(x = timestamp, y = AtmoT_clean))+ylab("Temperature, in Celsius")+geom_tile(data = rt_rds[[i]],aes(y = 0,height = Inf, fill = compliance), alpha = 0.5)+
+  scale_fill_manual(breaks = levels(rt_rds[[i]]$compliance),
+                    values = c("grey99","red")) +ggtitle("Temperature Time Series")+geom_line()+theme_bw(base_size = 14))
+    cat("\n")
+    cat("\n")
+    cat("\n")
+    print(ggplot(rt_rds[[i]], aes(x = timestamp, y = AtmoRH_clean))+ylab("Relative Humidity, %")+geom_tile(data = rt_rds[[i]],aes(y = 0,height = Inf, fill = compliance), alpha = 0.5)+
+  scale_fill_manual(breaks = levels(rt_rds[[i]]$compliance),
+                    values = c("grey99","red")) +ggtitle("Relative Humidity Time Series")+geom_line()+theme_bw(base_size = 14))
+    cat("\n")
+    print(ggplot(rt_rds[[i]], aes(x = timestamp, y = PumpingFlowRate_clean))+ylab("Flow Rate")+geom_tile(data = rt_rds[[i]],aes(y = 0,height = Inf, fill = compliance), alpha = 0.5)+
+  scale_fill_manual(breaks = levels(rt_rds[[i]]$compliance),
+                    values = c("grey99","red")) +ggtitle("Flow Time Series")+geom_line()+theme_bw(base_size = 14))
+
+    cat("\n")
+    cat("\n")
+    cat("\n")
+
+   cat("***\n")
+
+  }
+}
+
+```
+
+
+# PM2.5 Time Series
+
+```{r, echo = FALSE}
+# PM2.5 Time Series
+
+#Used to print all interactive plots
+htmltools::tagList(pm25)
+
+```
