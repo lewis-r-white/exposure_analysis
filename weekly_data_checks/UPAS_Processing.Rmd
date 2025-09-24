@@ -48,15 +48,15 @@ library(here)
 
 ##Import raw UPAS files
 
-path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/NANTE ZONGO UPAS DATA_20250709"
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/SORUNUASE UPAS DATA_20250903"
 
 file_upas <- list.files(path, pattern = "*.txt", full.names = F,recursive = TRUE)
 
 length(file_upas)
 
 
-date = "20250709"
-community = "nante zongo"
+date = "20250903"
+community = "sorunuase"
 
 
 ```
@@ -69,8 +69,9 @@ community = "nante zongo"
 
 #118 columns
 upas_colnames <- c("SampleTime","UnixTime", "UnixTimeMCU","DateTimeUTC","DateTimeLocal","PumpingFlowRate" ,"OverallFlowRate","SampledVolume" , "FilterDP" ,                "BatteryCharge","AtmoT","AtmoP","AtmoRH","AtmoDensity","AtmoAlt","GPSQual","GPSlat","GPSlon","GPSalt","GPSsat" ,"GPSspeed","GPShDOP","AccelX" , "AccelXVar",               
-"AccelXMin","AccelXMax","AccelY","AccelYVar","AccelYMin","AccelYMax","AccelZ","AccelZVar","AccelZMin","AccelZMax","RotX" ,"RotXVar" , "RotXMin","RotXMax","RotY",             "RotYVar" , "RotYMin","RotYMax", "RotZ" ,"RotZVar","RotZMin","RotZMax","AccelComplianceCnt","AccelComplianceHrs","Xup", "XDown", "Yup","Ydown","Zup","Zdown",                 "StepCount", "LUX","UVindex","HighVisRaw","LowVisRaw","IRRaw","UVRaw","PMMeasCnt","PM1MC","PM1MCVar","PM2_5MC","PM2_5MCVar","PM4MC" ,"PM4MCVar","PM10MC","PM10MCVar", "PM0_5NC", "PM0_5NCVar","PM1NC","PM1NCVar","PM2_5NC", "PM2_5NCVar","PM4NC","PM4NCVar","PM10NC","PM10NCVar","PMtypicalParticleSize","PMtypicalParticleSizeVar", "PM2_5SampledMass" ,"PMReadingErrorCnt","PMFanErrorCnt","PMLaserErrorCnt","PMFanSpeedWarn","PCB1T","PCB2T","FdpT","AccelT","PT100R","PCB2P", "PumpPow1","PumpPow2", "PumpV","MassFlow","MFSVout","BFGenergy","BattVolt","v3_3","v5","PumpsON","Dead","BCS1" , "BCS2","BC_NPG","FLOWCTL","GPSRT","SD_DATAW","SD_HEADW",                 "TPumpsOFF","TPumpsON","CO2" ,"SCDT","SCDRH","VOCRaw","NOXRaw")
- 
+"AccelXMin","AccelXMax","AccelY","AccelYVar","AccelYMin","AccelYMax","AccelZ","AccelZVar","AccelZMin","AccelZMax","RotX" ,"RotXVar" , "RotXMin","RotXMax","RotY",             "RotYVar" , "RotYMin","RotYMax", "RotZ" ,"RotZVar","RotZMin","RotZMax","AccelComplianceCnt","AccelComplianceHrs","Xup", "XDown", "Yup","Ydown","Zup","Zdown",                 "StepCount", "LUX","UVindex","HighVisRaw","LowVisRaw","IRRaw","UVRaw","PMMeasCnt","PM1MC","PM1MCVar","PM2_5MC","PM2_5MCVar","PM4MC" ,"PM4MCVar","PM10MC","PM10MCVar", "PM0_5NC", "PM0_5NCVar","PM1NC","PM1NCVar","PM2_5NC", "PM2_5NCVar","PM4NC","PM4NCVar","PM10NC","PM10NCVar","PMtypicalParticleSize","PMtypicalParticleSizeVar", "PM2_5SampledMass" ,"PMReadingErrorCnt","PMFanErrorCnt","PMLaserErrorCnt","PMFanSpeedWarn","PCB1T","PCB2T","FdpT","AccelT","PT100R","PCB2P", "PumpPow1","PumpPow2", "PumpV","MassFlow","MFSVout","BFGenergy","BattVolt","v3_3","v5","PumpsON","Dead","BCS1" , "BCS2","BC_NPG","FLOWCTL","GPSRT","SD_DATAW","SD_HEADW",                 "TPumpsOFF","TPumpsON","CO2" ,"SCDT","SCDRH","VOCRaw","NOXRaw"
+)
+
 
 ```
 
@@ -104,6 +105,11 @@ function_read_UPAS_data <- function(filepath) {
            SampleName = subset(data_parameter, PARAMETER == "SampleName")$VALUE[1],
            CartridgeID = subset(data_parameter, PARAMETER == "CartridgeID")$VALUE[1],
            LifetimeSampleCount = subset(data_parameter, PARAMETER == "LifetimeSampleCount")$VALUE[1],
+           
+           LifetimeSampleRuntime = subset(data_parameter, PARAMETER == "LifetimeSampleRuntime")$VALUE[1],
+           LifetimeBatteryRuntime = subset(data_parameter, PARAMETER == "LifetimeBatteryRuntime")$VALUE[1],
+           LifetimeSamplePumptime = subset(data_parameter, PARAMETER == "LifetimeSamplePumptime")$VALUE[1],
+           
            SampledVolume = subset(data_parameter, PARAMETER == "SampledVolume")$VALUE[1],
            OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
            PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
@@ -125,53 +131,140 @@ function_read_UPAS_data <- function(filepath) {
   return(data)
 }
 
+```
 
-##Updated Firmware (May 2025 onward)
+```{r,echo = FALSE,warning = FALSE, message = FALSE}
+# ##Updated Firmware (May 2025 onward)
+# function_read_UPAS_data_ <- function(filepath) {
+#   
+#   data_parameter  <- read.csv(filepath, header = F, nrows = 83, skip = 1)
+#   colnames(data_parameter) <- c("PARAMETER","VALUE","UNITS.NOTES")
+#   
+#   data_raw  <- read_csv(file = filepath, skip = 119, skip_empty_rows = T, col_names = FALSE, guess_max = 10000, show_col_types = FALSE) #updated firmware*
+#   #Removed the following: locale = readr::locale(encoding = encoding$encoding)
+# 
+#   problems <- problems(data_raw)
+#   bad_rows <- problems$row
+#   
+#   #104 columns
+#   upas_colnames <-  read.csv(filepath, header = F, nrows = 1, skip = 117)
+#   colnames(data_raw) <- upas_colnames[1,]
+# 
+#   data_raw$badrows <- nrow(problems)
+# 
+#   data <- data_raw %>%
+#     dplyr::mutate(
+#            UPASserial = subset(data_parameter, PARAMETER == "UPASserial")$VALUE[1],
+#            SampleName = subset(data_parameter, PARAMETER == "SampleName")$VALUE[1],
+#            CartridgeID = subset(data_parameter, PARAMETER == "CartridgeID")$VALUE[1],
+#            LifetimeSampleCount = subset(data_parameter, PARAMETER == "LifetimeSampleCount")$VALUE[1],
+#            
+#            LifetimeSampleRuntime = subset(data_parameter, PARAMETER == "LifetimeSampleRuntime")$VALUE[1],
+#            LifetimeBatteryRuntime = subset(data_parameter, PARAMETER == "LifetimeBatteryRuntime")$VALUE[1],
+#            LifetimeSamplePumptime = subset(data_parameter, PARAMETER == "LifetimeSamplePumptime")$VALUE[1],
+#            
+#            SampledVolume = subset(data_parameter, PARAMETER == "SampledVolume")$VALUE[1],
+#            OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
+#            PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
+#            StartBatteryCharge = subset(data_parameter, PARAMETER == "StartBatteryCharge")$VALUE[1],
+#            EndBatteryCharge = subset(data_parameter, PARAMETER == "EndBatteryCharge")$VALUE[1],
+#            StartBatteryVoltage = subset(data_parameter, PARAMETER == "StartBatteryVoltage")$VALUE[1],
+#            EndBatteryVoltage = subset(data_parameter, PARAMETER == "EndBatteryVoltage")$VALUE[1],
+#            ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
+#            DutyCycle  = subset(data_parameter, PARAMETER == "FlowDutyCycle")$VALUE[1],
+#            UPAS_Compliance = subset(data_parameter, PARAMETER == "PercentTimeWorn")$VALUE[1],
+#            ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1]  ,
+#            PMSensorInterval = subset(data_parameter, PARAMETER == "PMSensorInterval")$VALUE[1] ,
+#            FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1] ,
+#            compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0))
+# 
+# 
+#   data$compliance_rollmean <- ifelse(as.numeric(rollapply(data$compliance, width=20,  FUN = mean, align = "center", na.rm = TRUE, partial=F, fill = NA)) > 0, 1, 0)
+#   
+#   return(data)
+# }
+
+
+
+
 function_read_UPAS_data_ <- function(filepath) {
-  
-  data_parameter  <- read.csv(filepath, header = F, nrows = 83, skip = 1)
-  colnames(data_parameter) <- c("PARAMETER","VALUE","UNITS.NOTES")
-  
-  data_raw  <- read_csv(file = filepath, skip = 119, skip_empty_rows = T, col_names = FALSE, guess_max = 10000, show_col_types = FALSE) #updated firmware*
-  #Removed the following: locale = readr::locale(encoding = encoding$encoding)
 
-  problems <- problems(data_raw)
-  bad_rows <- problems$row
+  # 1) Detect encoding once
+  enc_guess <- readr::guess_encoding(filepath)
+  enc <- enc_guess$encoding[1]
+  if (is.na(enc)) enc <- "UTF-8"  # safe default
+
+  # 2) Parameters block (same as before, but respect encoding)
+  data_parameter <- read.csv(filepath, header = FALSE, nrows = 83, skip = 1,
+                             fileEncoding = enc)
+  colnames(data_parameter) <- c("PARAMETER","VALUE","UNITS.NOTES")
+
+  # 3) Read the header row with the same encoding
+  upas_colnames <- read.csv(filepath, header = FALSE, nrows = 1, skip = 117,
+                            fileEncoding = enc)
   
-  #104 columns
-  upas_colnames <-  read.csv(filepath, header = F, nrows = 1, skip = 117)
+  # 4) Read the log body with the same encoding
+  data_raw <- readr::read_csv(
+    file = filepath,
+    skip = 119,                # updated firmware
+    skip_empty_rows = TRUE,
+    col_names = FALSE,
+    guess_max = 10000,
+    show_col_types = FALSE,
+    locale = readr::locale(encoding = enc)  # <-- key line
+  )
+
+  # 5) Apply column names
   colnames(data_raw) <- upas_colnames[1,]
 
-  data_raw$badrows <- nrow(problems)
+  # 6) Let readr repair types now that encoding is correct
+  data_raw <- readr::type_convert(data_raw, locale = readr::locale(encoding = enc), na = c("", "NA"))
 
+  # 7) (optional) drop rows with parse problems
+  pb <- readr::problems(data_raw)
+  if (nrow(pb)) {
+    bad_rows <- unique(pb$row)
+    data_raw <- data_raw[-bad_rows, , drop = FALSE]
+  }
+
+  # 8) Your mutate block unchanged
   data <- data_raw %>%
     dplyr::mutate(
-           UPASserial = subset(data_parameter, PARAMETER == "UPASserial")$VALUE[1],
-           SampleName = subset(data_parameter, PARAMETER == "SampleName")$VALUE[1],
-           CartridgeID = subset(data_parameter, PARAMETER == "CartridgeID")$VALUE[1],
-           LifetimeSampleCount = subset(data_parameter, PARAMETER == "LifetimeSampleCount")$VALUE[1],
-           SampledVolume = subset(data_parameter, PARAMETER == "SampledVolume")$VALUE[1],
-           OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
-           PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
-           StartBatteryCharge = subset(data_parameter, PARAMETER == "StartBatteryCharge")$VALUE[1],
-           EndBatteryCharge = subset(data_parameter, PARAMETER == "EndBatteryCharge")$VALUE[1],
-           StartBatteryVoltage = subset(data_parameter, PARAMETER == "StartBatteryVoltage")$VALUE[1],
-           EndBatteryVoltage = subset(data_parameter, PARAMETER == "EndBatteryVoltage")$VALUE[1],
-           ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
-           DutyCycle  = subset(data_parameter, PARAMETER == "FlowDutyCycle")$VALUE[1],
-           UPAS_Compliance = subset(data_parameter, PARAMETER == "PercentTimeWorn")$VALUE[1],
-           ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1]  ,
-           PMSensorInterval = subset(data_parameter, PARAMETER == "PMSensorInterval")$VALUE[1] ,
-           FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1] ,
-           compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0))
+      UPASserial = subset(data_parameter, PARAMETER == "UPASserial")$VALUE[1],
+      SampleName = subset(data_parameter, PARAMETER == "SampleName")$VALUE[1],
+      CartridgeID = subset(data_parameter, PARAMETER == "CartridgeID")$VALUE[1],
+      LifetimeSampleCount = subset(data_parameter, PARAMETER == "LifetimeSampleCount")$VALUE[1],
+      LifetimeSampleRuntime = subset(data_parameter, PARAMETER == "LifetimeSampleRuntime")$VALUE[1],
+      LifetimeBatteryRuntime = subset(data_parameter, PARAMETER == "LifetimeBatteryRuntime")$VALUE[1],
+      LifetimeSamplePumptime = subset(data_parameter, PARAMETER == "LifetimeSamplePumptime")$VALUE[1],
+      SampledVolume = subset(data_parameter, PARAMETER == "SampledVolume")$VALUE[1],
+      OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
+      PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
+      StartBatteryCharge = subset(data_parameter, PARAMETER == "StartBatteryCharge")$VALUE[1],
+      EndBatteryCharge = subset(data_parameter, PARAMETER == "EndBatteryCharge")$VALUE[1],
+      StartBatteryVoltage = subset(data_parameter, PARAMETER == "StartBatteryVoltage")$VALUE[1],
+      EndBatteryVoltage = subset(data_parameter, PARAMETER == "EndBatteryVoltage")$VALUE[1],
+      ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
+      DutyCycle  = subset(data_parameter, PARAMETER == "FlowDutyCycle")$VALUE[1],
+      UPAS_Compliance = subset(data_parameter, PARAMETER == "PercentTimeWorn")$VALUE[1],
+      ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
+      PMSensorInterval = subset(data_parameter, PARAMETER == "PMSensorInterval")$VALUE[1],
+      FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1],
+      compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0)
+    )
 
+  data$compliance_rollmean <- ifelse(
+    as.numeric(zoo::rollapply(data$compliance, width = 20, FUN = mean,
+                              align = "center", na.rm = TRUE, partial = FALSE, fill = NA)) > 0, 1, 0)
 
-  data$compliance_rollmean <- ifelse(as.numeric(rollapply(data$compliance, width=20,  FUN = mean, align = "center", na.rm = TRUE, partial=F, fill = NA)) > 0, 1, 0)
-  
   return(data)
 }
 
+```
 
+
+
+```{r,echo = FALSE,warning = FALSE, message = FALSE}
 
 #Function if functions above result in an error
 function_read_UPAS_data_error <- function(filepath) {
@@ -217,6 +310,11 @@ data_raw <- read_csv(paste(valid_lines, collapse = "\n"))
            SampleName = subset(data_parameter, PARAMETER == "SampleName")$VALUE[1],
            CartridgeID = subset(data_parameter, PARAMETER == "CartridgeID")$VALUE[1],
            LifetimeSampleCount = subset(data_parameter, PARAMETER == "LifetimeSampleCount")$VALUE[1],
+           
+           LifetimeSampleRuntime = subset(data_parameter, PARAMETER == "LifetimeSampleRuntime")$VALUE[1],
+           LifetimeBatteryRuntime = subset(data_parameter, PARAMETER == "LifetimeBatteryRuntime")$VALUE[1],
+           LifetimeSamplePumptime = subset(data_parameter, PARAMETER == "LifetimeSamplePumptime")$VALUE[1],
+           
            SampledVolume = subset(data_parameter, PARAMETER == "SampledVolume")$VALUE[1],
            OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
            PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
@@ -252,7 +350,7 @@ for(i in 1:length(file_upas)){
     filepath_upas <- file.path(path,dirname(file_upas[[i]]), basename(file_upas[i]))
     
   encoding <- guess_encoding(filepath_upas)
-  function_file <- function_read_UPAS_data(filepath_upas) 
+  function_file <- function_read_UPAS_data_(filepath_upas) 
 
   list.upas[[i]] <- function_file %>% 
     mutate(filter_id   = str_extract(file_upas[i], "KHU[0-9]{4}"),
@@ -290,29 +388,71 @@ for(i in 1:length(file_upas)){
 
 
 ##Pull out corrupted rows and set to null, create new column (corrupt) to indicate such
-column_debugging <- c("FilterDP","AtmoT","AtmoRH", "PM2_5MC","MassFlow","PumpingFlowRate")
+# column_debugging <- c("FilterDP","AtmoT","AtmoRH", "PM2_5MC","MassFlow","PumpingFlowRate")
 
 #Updated columns with new firmware (Use if processing files post-May 2025 in devices with updated firmware)
 
-# column_debugging <- c("FilterDP","AtmoT","AtmoRH", "PM2_5MC","MassFlowFactory","PumpingFlowFactory")
+column_debugging <- c("FilterDP","AtmoT","AtmoRH", "PM2_5MC","MassFlowFactory","PumpingFlowFactory", "PumpingFlowRate")
+
+#Updated columns for August (which didn't have PumpingFlowRate)
+column_debugging <- c("FilterDP", "AtmoT", "AtmoRH", "PM2_5MC", "MassFlowFactory", "PumpingFlowFactory")
 
 
+
+numeric_like <- c("PumpingDuration", "PumpingFlowFactory","PumpingFlowRate", "PM2_5MC", "PM2_5MC_clean")
+
+for (i in seq_along(list.upas)) {
+  for (col in numeric_like) {
+    if (col %in% names(list.upas[[i]])) {
+      # Force coercion to numeric
+      list.upas[[i]][[col]] <- readr::parse_number(
+        as.character(list.upas[[i]][[col]]),
+        na = c("", "NA")
+      )
+    }
+  }
+}
 
 for(i in 1:length(list.upas)){
 
  for (col in column_debugging)  {
    tryCatch({list.upas[[i]][,paste0(col,"_clean")] <- ifelse(grepl("^[0-9\\.]+$", as.data.frame(list.upas[[i]])[,col]) == TRUE, as.data.frame(list.upas[[i]])[,col], NA)
        }, error = function(e){print("Error computing.")})
-}}
+ }}
+
+
+
+
+
+# 
+# for(i in 1:length(list.upas)){
+#   for (col in column_debugging)  {
+#     tryCatch({
+#       if (col %in% names(list.upas[[i]])) {
+#         list.upas[[i]][, paste0(col,"_clean")] <- ifelse(
+#           grepl("^[0-9\\.]+$", list.upas[[i]][[col]]),
+#           list.upas[[i]][[col]],
+#           NA
+#         )
+#       } else {
+#         message(paste("Column", col, "missing in file", file_upas[i]))
+#       }
+#     }, error = function(e){
+#       message(paste("Error computing column", col, "for file", file_upas[i], ":", e$message))
+#     })
+#   }
+# }
+
 
 #Save as rds file
-write_rds(
-  list.upas,
-  here::here("weekly_data_checks", "upas_data2025", "processed", paste0("list.upas_", community, date, ".rds"))
-)
+# write_rds(
+#   list.upas,
+#   here::here("weekly_data_checks", "upas_data2025", "processed", paste0("list.upas_", community, date, ".rds"))
+# )
 
 
 list.upasr3_new <- list.upas
+
 pm_summary_upas <- data.frame(
   upas_id = rep(NA, length(list.upasr3_new)),
   subject_id = rep(NA, length(list.upasr3_new)),
@@ -325,6 +465,11 @@ pm_summary_upas <- data.frame(
   run_time_hour = rep(NA, length(list.upasr3_new)),
   # run_time_hour_comp = rep(NA, length(list.upasr3_new)),
   shutdownmode = rep(NA, length(list.upasr3_new)),
+  
+  LifetimeSampleRuntime = rep(NA, length(list.upasr3_new)),
+  LifetimeBatteryRuntime = rep(NA, length(list.upasr3_new)),
+  LifetimeSamplePumptime = rep(NA, length(list.upasr3_new)),
+
   battvolt_start = rep(NA, length(list.upasr3_new)),
   battvolt_end = rep(NA, length(list.upasr3_new)),
   flowoffset = rep(NA, length(list.upasr3_new)),
@@ -371,16 +516,14 @@ for (i in 1:length(list.upasr3_new)) {
 list.upasr3_new[[i]]$PM2_5MC_clean <- as.numeric(list.upasr3_new[[i]]$PM2_5MC_clean)
 list.upasr3_new[[i]]$AtmoRH_clean <- as.numeric(list.upasr3_new[[i]]$AtmoRH_clean)
 list.upasr3_new[[i]]$AtmoT_clean <- as.numeric(list.upasr3_new[[i]]$AtmoT_clean)
-# list.upasr3_new[[i]]$PumpingFlowFactory_clean <- as.numeric(list.upasr3_new[[i]]$PumpingFlowFactory_clean)
+list.upasr3_new[[i]]$PumpingFlowFactory_clean <- as.numeric(list.upasr3_new[[i]]$PumpingFlowFactory_clean)
 
-list.upasr3_new[[i]]$PumpingFlowRate_clean <- as.numeric(list.upasr3_new[[i]]$PumpingFlowRate_clean)
+#list.upasr3_new[[i]]$PumpingFlowRate_clean <- as.numeric(list.upasr3_new[[i]]$PumpingFlowRate_clean)
 list.upasr3_new[[i]]$BattVolt <- as.numeric(list.upasr3_new[[i]]$BattVolt)
 list.upasr3_new[[i]]$FlowOffset <- as.numeric(list.upasr3_new[[i]]$FlowOffset)
 list.upasr3_new[[i]]$FilterDP_clean <- as.numeric(list.upasr3_new[[i]]$FilterDP_clean)   
 
 list.upasr3_new[[i]]$ShutdownMode_num <- as.numeric(list.upasr3_new[[i]]$ShutdownMode)
-
-
 
 list.upasr3_new[[i]]$ShutdownModecat <- ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 0, "Unknown error shutdown", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 1, "User PushButton Sample Stop", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 2, "Depleted Battery Shutdown", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 3, "Sucessfully completed deployment", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 4, "Thermal Protection Shutdown", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 5, "Max power at initialization error",ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 6, "Max pump voltage during sample shutdown", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 7, "Blocked flow during shutdown", ifelse(list.upasr3_new[[i]]$ShutdownMode_num == 8, "SD card removed during sample",
 ifelse(list.upasr3_new[[i]]$ShutdownMode_num >= 60, "Contact ATS for Support", list.upasr3_new[[i]]$ShutdownMode))))))))))
@@ -406,7 +549,13 @@ ifelse(list.upasr3_new[[i]]$ShutdownMode_num >= 60, "Contact ATS for Support", l
   pm_summary_upas$end_time[i] <-  as.POSIXct(list.upasr3_new[[i]]$DateTimeLocal[nrow(list.upasr3_new[[i]])], format = "%Y-%m-%d %H:%M:%S") #as.Date(list.upasr3_new[[i]]$DateTimeLocal[nrow(list.upasr3_new[[i]])])
   pm_summary_upas$run_time_hour[i] <-  unique(as.numeric(list.upasr3_new[[i]]$OverallDuration))
   # pm_summary_upas$run_time_hour_comp[i] <-  round(nrow(list.upasr3_new[[i]])/2/60,2)
+
   pm_summary_upas$shutdownmode[i] <-  list.upasr3_new[[i]]$ShutdownModecat[1]
+
+  # ## NEW LIFETIME VARS
+  pm_summary_upas$LifetimeSampleRuntime[i] <- as.numeric(trimws(list.upasr3_new[[i]]$LifetimeSampleRuntime[1]))
+  pm_summary_upas$LifetimeBatteryRuntime[i] <- as.numeric(trimws(list.upasr3_new[[i]]$LifetimeBatteryRuntime[1]))
+  pm_summary_upas$LifetimeSamplePumptime[i] <- as.numeric(trimws(list.upasr3_new[[i]]$LifetimeSamplePumptime[1]))
 
   pm_summary_upas$sampleVolume[i] <-  unique(as.numeric(list.upasr3_new[[i]]$SampledVolume))
 
@@ -426,10 +575,37 @@ ifelse(list.upasr3_new[[i]]$ShutdownMode_num >= 60, "Contact ATS for Support", l
   pm_summary_upas$filterdp_min[i] <- round(min(list.upasr3_new[[i]]$FilterDP_clean, na.rm = T),2)
   pm_summary_upas$filterdp_mean[i] <- round(mean(list.upasr3_new[[i]]$FilterDP_clean, na.rm = T),2)
   pm_summary_upas$filterdp_max[i] <- round(max(list.upasr3_new[[i]]$FilterDP_clean, na.rm = T),2)
-  pm_summary_upas$flow_min[i] <- round(min(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
-  pm_summary_upas$flow_max[i] <- round(max(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
-  pm_summary_upas$flow_mean[i] <- round(mean(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
+  
+  # pm_summary_upas$flow_min[i] <- round(min(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
+  # pm_summary_upas$flow_max[i] <- round(max(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
+  # pm_summary_upas$flow_mean[i] <- round(mean(list.upasr3_new[[i]]$PumpingFlowRate_clean, na.rm = T),2)
+  
+  pm_summary_upas$flow_min[i] <- round(min(list.upasr3_new[[i]]$PumpingFlowFactory_clean, na.rm = T),2)
+  pm_summary_upas$flow_max[i] <- round(max(list.upasr3_new[[i]]$PumpingFlowFactory_clean, na.rm = T),2)
+  pm_summary_upas$flow_mean[i] <- round(mean(list.upasr3_new[[i]]$PumpingFlowFactory_clean, na.rm = T),2)
+  
   pm_summary_upas$flowoffset[i] = round(mean(list.upasr3_new[[i]]$FlowOffset, na.rm = T),2)
+  
+  # Minutes where temperature > 50
+  pm_summary_upas$temp_minutes_over_50[i] <- sum(list.upasr3_new[[i]]$AtmoT_clean > 50, na.rm = TRUE) / 2
+  # Flag if max temperature > 53
+  pm_summary_upas$temp_max_flag_over_53[i] <- ifelse(pm_summary_upas$temp_max[i] > 53, 1, 0)
+  # Minutes where flow < 0.9
+  
+  # pm_summary_upas$flow_minutes_under_0_9[i] <- sum(list.upasr3_new[[i]]$PumpingFlowRate_clean < 0.9, na.rm = TRUE)/2
+  # # Flag if low flow duration > 10 minutes
+  # pm_summary_upas$flow_minutes_under_0_9[i] <- sum(list.upasr3_new[[i]]$PumpingFlowRate_clean < 0.9, na.rm = TRUE)/2
+  # # Flag if low flow duration > 10 minutes
+  
+  pm_summary_upas$flow_minutes_under_0_9[i] <- sum(list.upasr3_new[[i]]$PumpingFlowFactory_clean < 0.9, na.rm = TRUE)/2
+  # Flag if low flow duration > 10 minutes
+  pm_summary_upas$flow_minutes_under_0_9[i] <- sum(list.upasr3_new[[i]]$PumpingFlowFactory_clean < 0.9, na.rm = TRUE)/2
+  # Flag if low flow duration > 10 minutes
+  
+  
+  
+  pm_summary_upas$flow_flag_low[i] <- ifelse(pm_summary_upas$flow_minutes_under_0_9[i] > 10, 1, 0)
+  
   pm_summary_upas$battvolt_start[i] =list.upasr3_new[[i]]$BattVolt[1]
   pm_summary_upas$battvolt_end[i] =list.upasr3_new[[i]]$BattVolt[nrow(list.upasr3_new[[i]])]
 
@@ -481,52 +657,78 @@ ifelse(list.upasr3_new[[i]]$ShutdownMode_num >= 60, "Contact ATS for Support", l
 pm_summary_upas$start_time <- as.POSIXct(pm_summary_upas$start_time, format = "%Y-%m-%dT%H:%M:%SZ")
 pm_summary_upas$end_time <- as.POSIXct(pm_summary_upas$end_time, format = "%Y-%m-%dT%H:%M:%SZ")
 
+pm_summary_upas$community <- community # add in the community
+
 #Save summary as csv file
 
 write.csv(pm_summary_upas, here::here("weekly_data_checks", "upas_data2025", "processed", paste0("pm_summary_upas_", community, date, ".csv")))
-
-
-
-# datatable(pm_summary_upas, 
-#         extensions = c("FixedColumns", "FixedHeader"), options = list(
-#   scrollX = TRUE,
-#   fixedHeader = T,
-#   fixedColumns = list(leftColumns = c(1:5))
-# ))%>% formatStyle(
-#   'run_time_hour',
-#   backgroundColor = styleInterval(44,c("red","white")))%>% formatStyle(
-#   'pm_max',
-#   backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
-#   'pm_median',
-#   backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
-#   'pm_mean',
-#   backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
-#   'temp_min',
-#   backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
-#   'temp_max',
-#   backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
-#   'temp_mean',
-#   backgroundColor = styleInterval(45,c("white","red")))%>% formatStyle(
-#   'rh_min',
-#   backgroundColor = styleInterval(0,c("red","white")))%>% formatStyle(
-#   'rh_max',
-#   backgroundColor = styleInterval(99,c("white","red")))%>% formatStyle(
-#   'flow_max',
-#   backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
-#   'flow_mean',
-#   backgroundColor = styleInterval(2.08,c("white","red")))%>% formatStyle(
-#   'flow_mean',
-#   backgroundColor = styleInterval(0.960,c("red","white")))%>% formatStyle(
-#   'compliance_hours_day_session1',
-#   backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
-#   'compliance_hours_day_session2',
-#   backgroundColor = styleInterval(10,c("red","white")))%>% formatStyle(
-#   'compliance_hours_night_session1',
-#   backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
-#   'compliance_hours_night_session2',
-#   backgroundColor = styleInterval(1,c("white","red")))%>% formatStyle(
-#   'duplicate_subject', ####
-#   backgroundColor = styleEqual("Yes",c("red")))%>% formatStyle(
-#   'shutdownmode',
-#   backgroundColor = styleEqual("Contact ATS for Support",c("red")))
 ```
+
+
+
+## Save output as excel file with conditional formatting
+
+```{r}
+library(openxlsx)
+
+# Create workbook
+wb <- createWorkbook()
+sheet_name <- paste0(community, "_", date)
+addWorksheet(wb, sheet_name)
+
+
+writeData(wb, sheet_name, pm_summary_upas)
+
+
+rows <- 2:(nrow(pm_summary_upas) + 1)  # header is row 1
+style_red <- createStyle(bgFill = "red")
+
+# Helper to get column index
+get_col <- function(var) which(names(pm_summary_upas) == var)
+
+# Conditional formatting rules
+apply_rules <- function(var, rule, type = "expression") {
+  if (var %in% names(pm_summary_upas)) {
+    conditionalFormatting(wb, sheet_name, cols = get_col(var), rows = rows, rule = rule, style = style_red, type = type)
+  }
+}
+
+# Add all rules
+purrr::walk(c("run_time_hour"), ~apply_rules(.x, "<=44"))
+purrr::walk(c("pm_max", "pm_median", "pm_mean", "temp_min", "rh_min"), ~apply_rules(.x, "<0"))
+purrr::walk(c("temp_max", "temp_mean"), ~apply_rules(.x, ">45"))
+apply_rules("rh_max", ">99")
+purrr::walk(c("flow_max", "flow_mean"), ~apply_rules(.x, ">2.08"))
+apply_rules("flow_mean", "<0.96")
+purrr::walk(c("compliance_hours_day_session1", "compliance_hours_day_session2"), ~apply_rules(.x, "<=10"))
+purrr::walk(c("compliance_hours_night_session1", "compliance_hours_night_session2"), ~apply_rules(.x, "<1"))
+apply_rules("temp_minutes_over_50", ">0")
+apply_rules("flow_minutes_under_0_9", ">10")
+purrr::walk(c("temp_max_flag_over_53", "flow_flag_low"), ~apply_rules(.x, "==1"))
+
+# Text match rules
+if ("duplicate_subject" %in% names(pm_summary_upas)) {
+  conditionalFormatting(wb, sheet_name, cols = get_col("duplicate_subject"), rows = rows, type = "contains", rule = "Yes", style = style_red)
+}
+if ("shutdownmode" %in% names(pm_summary_upas)) {
+  conditionalFormatting(wb, sheet_name, cols = get_col("shutdownmode"), rows = rows, type = "contains", rule = "Contact ATS for Support", style = style_red)
+}
+
+# Save Excel file
+write_path <- here::here("weekly_data_checks", "upas_data2025", "processed", paste0("formatted_", community, "_", date, ".xlsx"))
+saveWorkbook(wb, write_path, overwrite = TRUE)
+
+```
+
+
+
+```{r}
+# full <- read_rds("/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/processed/list.upas_sorunuase20250903.rds")
+# 
+# example_data <- full[[1]] 
+# 
+# example_data %>% select(timestamp, compliance, PM2_5MC_clean, subject_id, UPASserial)
+# 
+
+```
+
