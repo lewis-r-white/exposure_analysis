@@ -42,18 +42,26 @@ library(here)
 
 ```
 
+## Getting Started
+Update `path`, `community`, and `date` for your weekly folder.
+Hit "run all" to generate:
+An `.rds` file of cleaned raw data
+A summary `.csv` for QC review
+A color-coded `.xlsx` for QC review
+
+
 ## Load path to specific folder containing txt files to be read and cleaned
 
 ```{r,echo = FALSE}
 
-##Import raw UPAS files
+##Import raw UPAS files. This should be folder containing the txt files. 
 path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/ABUDWUM UPAS DATA_20251026"
 
 file_upas <- list.files(path, pattern = "*.txt", full.names = F,recursive = TRUE)
 
-length(file_upas)
+length(file_upas) # check to make sure data is there
 
-# specify meta data 
+# specify meta data (pull this from file name)
 date = "20251026"
 community = "abudwum"
 ```
@@ -75,6 +83,9 @@ upas_colnames <- c("SampleTime","UnixTime", "UnixTimeMCU","DateTimeUTC","DateTim
 
 ```{r}
 # ---- shared helper: derive_seg_sec ----
+# This function estimates the sampling interval between consecutive timestamps. It calculates time differences in seconds, replaces missing or invalid values with a sensible default (based on the median interval or device PMSensorInterval), and caps unusually large gaps to one nominal step to yield a stable, step-size vector.
+
+
 derive_seg_sec <- function(ts_posix, pmsi = NA) {
   # ts_posix: POSIXct time vector (or something coercible)
   # pmsi: device PMSensorInterval (can be char like "30", "30 sec", etc.)
@@ -106,7 +117,7 @@ derive_seg_sec <- function(ts_posix, pmsi = NA) {
 
 ## function to load data before may 2025
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
-# #Firmware Prior to May 2025
+# #Firmware Prior to May 2025 
 # function_read_UPAS_data <- function(filepath) {
 #   
 #   data_parameter  <- read.csv(filepath, header = F, nrows = 76, skip = 1)
@@ -215,9 +226,14 @@ derive_seg_sec <- function(ts_posix, pmsi = NA) {
 ```
 
 ## funciton to load data after may 2025
+
+Main UPAS file reader for standard, well-formatted logs.  
+
+This version automatically detects file encoding, reads each section of the UPAS export (parameter block, header row, and data log), applies consistent column names, and converts data types while dropping rows with parsing issues. It then merges key metadata from the header, computes derived movement and light (LUX) features, and adds compliance indicators for quick QC and downstream analysis.
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
+
 function_read_UPAS_data_ <- function(filepath) {
-  # 1) Detect encoding once
+  # 1) Detect encoding once:  uses readr::guess_encoding() to inspect the file, selects the most likely encoding, and defaults to "UTF-8" if none is detected. This prevents character corruption when reading files from different sources.
   enc_guess <- readr::guess_encoding(filepath)
   enc <- enc_guess$encoding[1]
   if (is.na(enc))
@@ -296,7 +312,7 @@ function_read_UPAS_data_ <- function(filepath) {
       ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
       PMSensorInterval = subset(data_parameter, PARAMETER == "PMSensorInterval")$VALUE[1],
       FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1]
-      #compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0) ## COMMENTED OUT BECAUSE AccelComplianceCnt VARIABLES IN NEW UPAS DATA IS ALREADY THE COMPLIANCE ROLL MEAN (BELOW), SO THIS I SNO LONGER NECESSARY
+      #compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0) ## COMMENTED OUT BECAUSE AccelComplianceCnt VARIABLES IN NEW UPAS DATA IS ALREADY THE COMPLIANCE ROLL MEAN (BELOW), SO THIS IS NO LONGER NECESSARY
     )
   
   # data$compliance_rollmean <- ifelse(
@@ -306,6 +322,7 @@ function_read_UPAS_data_ <- function(filepath) {
   
   
   # ---- DERIVED FEATURES (movement, LUX) ----
+  # Create a unified timestamp column. Prefer DateTimeLocal, but fall back to UnixTime if needed
   ts <- suppressWarnings(lubridate::ymd_hms(data$DateTimeLocal, tz = "UTC"))
   if (all(is.na(ts)) && "UnixTime" %in% names(data)) {
     ts <- as.POSIXct(as.numeric(data$UnixTime),
@@ -314,6 +331,7 @@ function_read_UPAS_data_ <- function(filepath) {
   }
   data$.__ts <- ts
   
+  # Convert certain variables to numeric (some come in as char or mixed types)
   numify <- function(x)
     suppressWarnings(readr::parse_number(as.character(x)))
   for (v in c("AccelXVar",
@@ -326,6 +344,9 @@ function_read_UPAS_data_ <- function(filepath) {
       data[[v]] <- numify(data[[v]])
   }
   
+  # Order by timestamp and calculate a few derived fields
+  # LUX_s: short (3-point) rolling median of LUX to smooth spikes
+  # seg_sec: estimated sampling interval in seconds from derive_seg_sec()
   data <- data %>%
     arrange(.__ts) %>%
     mutate(
@@ -340,7 +361,8 @@ function_read_UPAS_data_ <- function(filepath) {
   # Boolean "worn" indicator directly from firmware logic
   data$worn_flag <- as.integer(data$AccelComplianceCnt > 0)
   
-  # Keep AccelXVar sum for QC plotting only
+  # Combine X/Y/Z acceleration variance into one magnitude measure
+  # (used mainly for quick QC checks / plots)
   if (all(c("AccelXVar", "AccelYVar", "AccelZVar") %in% names(data))) {
   data$acc_mag <- rowSums(cbind(data$AccelXVar, data$AccelYVar, data$AccelZVar), na.rm = TRUE)
 } else {
@@ -349,6 +371,7 @@ function_read_UPAS_data_ <- function(filepath) {
 
   
   # --- Clean-up --------------------------------------------------------
+  # Drop temporary timestamp column before returning
   data$.__ts <- NULL
   return(data)
   
@@ -356,6 +379,8 @@ function_read_UPAS_data_ <- function(filepath) {
 ```
 
 ## Function to use if main function results in error
+
+This fallback version is a more flexible “salvage” reader for corrupted or oddly formatted UPAS files. Unlike the main function, it manually reads the file line-by-line after the header, rebuilds the log body from raw text, and aligns columns even when counts don’t match. It skips strict parsing steps (like removing problematic rows) in favor of keeping as much data as possible. In short, this one prioritizes recovering usable data when the normal read function fails due to formatting issues.
 
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
 #Function if functions above result in an error
@@ -497,6 +522,15 @@ colnames(data_raw) <- upas_colnames[1, ]
 
 # DOWNLOAD THE DATA 
 
+This section loops through all UPAS files, reading and cleaning each one automatically.  
+
+For every file, it first tries to read using the main `function_read_UPAS_data_()` (the standard parser).  
+If that fails, it switches to the fallback `function_read_UPAS_data_error()` to recover data from files with formatting or encoding issues.  
+
+Each dataset is then tagged with metadata (filter ID, subject ID, community, file name), timestamps are standardized to UTC, and elapsed time between consecutive measurements is calculated.  
+
+The cleaned outputs are stored in a list called `list.upas`, ready for merging and analysis.
+
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
 #### Create loop to load and clean all the data
 list.upas <- list()
@@ -543,9 +577,17 @@ for(i in 1:length(file_upas)){
 
 ## DATA CLEANING
 
+This section standardizes and cleans the raw UPAS data across all files.  
+
+It first converts all numeric-like columns (e.g., PM₂.₅, flow rates, acceleration variables) to numeric values to handle any mixed or character inputs.  
+
+Next, it checks key measurement columns for corruption—any values that don’t look like valid numbers are set to `NA`, and corresponding “_clean” columns are created for each.  
+
+Different column sets are used depending on the firmware version (newer devices include `PumpingFlowRate`).  
+These steps ensure that each dataset has consistent numeric formatting and clearly marks problematic or unreadable entries for downstream analysis.
+
+
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
-
-
 ##Pull out corrupted rows and set to null, create new column (corrupt) to indicate such
 # column_debugging <- c("FilterDP","AtmoT","AtmoRH", "PM2_5MC","MassFlow","PumpingFlowRate")
 
@@ -608,7 +650,6 @@ for(i in 1:length(list.upas)){
 # Save as rds file
 
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
-
 write_rds(
   list.upas,
   here::here("weekly_data_checks", "upas_data2025", "processed", paste0("list.upas_", community, date, ".rds"))
@@ -618,7 +659,11 @@ write_rds(
 
 ## CREATE SUMMARY DF FROM THE FULL DATA
 
-### initialize empty df
+This section initializes an empty summary data frame (`pm_summary_upas`) to hold key statistics and metadata for each UPAS run.  
+
+It sets up standardized columns for identifiers (UPAS ID, subject, filter, community), sampling times and durations, battery and flow parameters, environmental conditions (temperature, RH, filter differential pressure), and PM 2.5 summary metrics (min, mean, max, median).  
+
+
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
 list.upasr3_new <- list.upas
 
@@ -675,16 +720,16 @@ pm_summary_upas <- data.frame(
 
 ## Summarize results
 
+This section compiles key performance and quality metrics for each UPAS run into the `pm_summary_upas` data frame.  
+
+It first defines helper functions for safely calculating run-time, compliance, and overlap within time windows (e.g., day vs. night). Then, for each UPAS file, it extracts and cleans core variables, standardizes timestamps, and derives indicators like temperature, humidity, flow, and PM₂.₅ statistics (min, mean, median, max). It also classifies shutdown modes, computes battery and flow diagnostics, and quantifies compliance hours by session (day/night, first and second 24-hour periods). 
+
+The results are written to a CSV for use in weekly device performance checks.
+
 ```{r,echo = FALSE,warning = FALSE, message = FALSE}
 ## FUNCTIONS ADDED
 
-# safe_hours_run <- function(df, mask, run_end) {
-#   if (nrow(df) == 0) return(0)
-#   eff <- pmax(0, pmin(df$seg_sec, as.numeric(run_end - df$DateTimeLocal)))
-#   round(sum(eff[mask %in% TRUE], na.rm = TRUE) / 3600, 2)
-#   }
-
-# replace the old safe_hours_run with this
+## Calculate total hours within a given time window where mask == TRUE
 hours_in_window <- function(df, mask, t0, t1) {
   if (nrow(df) == 0) return(0)
   # start/end of each row’s interval
@@ -697,9 +742,7 @@ hours_in_window <- function(df, mask, t0, t1) {
 }
 
 
-
-
-
+# Calculate total minutes during a run where mask == TRUE (capped at run_end)
 minutes_in_run <- function(df, mask, run_end) {
   if (nrow(df) == 0) return(0)
   # clip each row's segment to the run window end
@@ -707,15 +750,18 @@ minutes_in_run <- function(df, mask, run_end) {
   sum(eff[mask %in% TRUE], na.rm = TRUE) / 60
 }
 
+
+# Safe statistic wrapper (returns NA if no finite values)
 safe_stat <- function(x, fun) {
   x <- x[is.finite(x)]
   if (length(x)) fun(x, na.rm = TRUE) else NA_real_
 }
 
+# Day/night classifiers (5am–9pm = day)
 is_day   <- function(t) lubridate::hour(t) >= 5 & lubridate::hour(t) < 21
 is_night <- function(t) !is_day(t)
   
-
+# ---------------------- Loop through each cleaned UPAS dataset --------------------------
 for (i in 1:length(list.upasr3_new)) {
   tryCatch({
     ## get date info
@@ -735,6 +781,7 @@ for (i in 1:length(list.upasr3_new)) {
     list.upasr3_new[[i]]$FilterDP_clean <- as.numeric(list.upasr3_new[[i]]$FilterDP_clean)
     list.upasr3_new[[i]]$ShutdownMode_num <- as.numeric(list.upasr3_new[[i]]$ShutdownMode)
     
+        # Create a descriptive shutdown mode label
     list.upasr3_new[[i]]$ShutdownModecat <- ifelse(
       list.upasr3_new[[i]]$ShutdownMode_num == 0,
       "Unknown error shutdown",
@@ -768,7 +815,7 @@ for (i in 1:length(list.upasr3_new)) {
                         list.upasr3_new[[i]]$ShutdownMode
                       ))))))))))
     
-  
+  # ---- Populate metadata columns in the summary df ----
   pm_summary_upas$upas_id[i] <- list.upasr3_new[[i]]$UPASserial[1]
   pm_summary_upas$subject_id[i] <- list.upasr3_new[[i]]$subject_id[1]
   pm_summary_upas$duplicate_subject[i] <- ifelse(str_extract(list.upasr3_new[[i]]$SampleName[1], "DUP") == "DUP" | str_extract(list.upasr3_new[[i]]$CartridgeID[1], "DUP") == "DUP", "Yes","No")
@@ -805,9 +852,7 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   
 
   
-
-  
-    # --- ADD: WEAR FLAG
+  # ADD WEAR/COMPLIANCE FLAG ----
   if (!("worn_flag" %in% names(list.upasr3_new[[i]]))) {
     if ("AccelComplianceCnt" %in% names(list.upasr3_new[[i]])) {
       list.upasr3_new[[i]]$worn_flag <- as.integer(list.upasr3_new[[i]]$AccelComplianceCnt > 0)
@@ -828,7 +873,7 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   
   in_run <- list.upasr3_new[[i]]$DateTimeLocal <= run_end
   
-  # sessions
+  # Two 24-hour sessions for compliance summaries
   s1_start <- run_start
   s1_end   <- min(run_end, run_start + 24 * 3600)
   
@@ -837,14 +882,14 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   
   df <- list.upasr3_new[[i]] # RENAME TO DF FOR EASE ******
   
-  # masks
+  # Day/night masks for session splits
   day_mask   <- is_day(df$DateTimeLocal)
   night_mask <- is_night(df$DateTimeLocal)
   
-  # Clip each row’s credited seconds to the run window 
+  # Effective seconds within run window
   eff <- pmax(0, pmin(df$seg_sec, as.numeric(run_end - df$DateTimeLocal))) ## eff is the effective seconds credited for each row (0 if after run_end)
   
-  ## ADD: COMPLIANCE BASED ON WORN FLAG AND EFFECTIVE SECONDS 
+  # Total compliance time (based on worn flag)
   wear_secs  <- sum(eff[df$worn_flag %in% TRUE], na.rm = TRUE)
   total_secs <- sum(eff, na.rm = TRUE)
   
@@ -859,12 +904,9 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   
   
   ## ----- IN RUN STATS --------
-  # --- PM (in-run, both unweighted and weighted) ---
   df_inrun <- df[in_run, ]
   df_inrun$PM2_5MC_clean <- as.numeric(df_inrun$PM2_5MC_clean)
   
-  # 
-  ## ----- IN RUN STATS --------
   df_inrun <- df[in_run, ] %>%
     arrange(DateTimeLocal) %>%
     mutate(PM2_5MC_filled = zoo::na.locf(PM2_5MC_clean, na.rm = FALSE))
@@ -950,32 +992,7 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   pm_summary_upas$compliance_hours_day_session2[i]   <- hours_in_window(df, df$worn_flag & day_mask,   s2_start, s2_end)
   pm_summary_upas$compliance_hours_night_session2[i] <- hours_in_window(df, df$worn_flag & night_mask, s2_start, s2_end)
   
-  # df24hr <- subset(list.upasr3_new[[i]],
-  #                      DateTimeLocal <= list.upasr3_new[[i]]$DateTimeLocal[1] + 60 * 60 * 24)
-  # 
-  # df_24_48hr <- subset(
-  #   list.upasr3_new[[i]],
-  #   DateTimeLocal >  list.upasr3_new[[i]]$DateTimeLocal[1] + 60 * 60 * 24 &
-  #     DateTimeLocal <= list.upasr3_new[[i]]$DateTimeLocal[1] + 60 *
-  #     60 * 48
-  # )
-  # 
-  # pm_summary_upas$compliance_hours_day_session1[i]   <- safe_hours_run(df24hr,
-  #                                                                      df24hr$worn_flag & is_day(df24hr$DateTimeLocal),
-  #                                                                      run_end)
-  # 
-  # pm_summary_upas$compliance_hours_night_session1[i] <- safe_hours_run(df24hr,
-  #                                                                      df24hr$worn_flag & is_night(df24hr$DateTimeLocal),
-  #                                                                      run_end)
-  # 
-  # pm_summary_upas$compliance_hours_day_session2[i]   <- safe_hours_run(df_24_48hr,
-  #                                                                      df_24_48hr$worn_flag & is_day(df_24_48hr$DateTimeLocal),
-  #                                                                      run_end)
-  # 
-  # pm_summary_upas$compliance_hours_night_session2[i] <- safe_hours_run(df_24_48hr,
-  #                                                                      df_24_48hr$worn_flag & is_night(df_24_48hr$DateTimeLocal),
-  #                                                                      run_end)
-  
+
   # ADD THE FILE NAME
   pm_summary_upas$file[i] <- list.upasr3_new[[i]]$file[1]
   # pm_summary_upas$badrows[i] <- list.upasr3_new[[i]]$badrows[1]
@@ -997,8 +1014,14 @@ write.csv(pm_summary_upas, here::here("weekly_data_checks", "upas_data2025", "pr
 ```
 
 
-
 ## Save output as excel file with conditional formatting
+
+This section exports the summarized UPAS data to a formatted Excel workbook for easy review.  
+A new sheet is created for each community/date combination, and conditional formatting rules are applied to highlight potential issues:  
+
+Red cells flag suspect values (e.g., short run times, negative PM or temperature readings, extreme temperatures or RH, abnormal flow rates). Compliance metrics are highlighted when day or night wear hours are too low. Flags also identify temperature over 50 °C, low flow periods, duplicate samples, and problematic shutdown modes.  
+
+The result is a clear, color-coded Excel report (`formatted_[community]_[date].xlsx`) that makes quality control checks quick and visual.
 
 ```{r}
 library(openxlsx)
@@ -1052,382 +1075,4 @@ saveWorkbook(wb, write_path, overwrite = TRUE)
 
 ```
 
-
-
-```{r}
-# full <- read_rds("/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/processed/list.upas_sorunuase20250903.rds")
-# 
-# example_data <- full[[1]] 
-# 
-# example_data %>% select(timestamp, compliance, PM2_5MC_clean, subject_id, UPASserial)
-# 
-
-```
-
-
-## PLOTS OF MOVEMENT
-
-## Setup & helpers
-```{r}
-# library(scales)
-# library(patchwork)
-# 
-# is_day   <- function(t) hour(t) >= 5 & hour(t) < 21
-# is_night <- function(t) !is_day(t)
-# 
-# # Build night shading rectangles (21:00–24:00 and 00:00–05:00)
-# night_rects <- function(tmin, tmax, tz = "UTC") {
-#   d0 <- lubridate::floor_date(with_tz(tmin, tz), "day")
-#   d1 <- lubridate::ceiling_date(with_tz(tmax, tz), "day")
-#   days <- seq(d0, d1, by = "1 day")
-#   tibble(
-#     xmin = c(days + hours(21), days + hours(0)),
-#     xmax = c(days + hours(24), days + hours(5)),
-#     ymin = -Inf, ymax = Inf
-#   ) |> filter(xmin < tmax & xmax > tmin)
-# }
-# 
-# # If needed, quickly compute seg_sec for a df (you already do this, but just in case)
-# ensure_seg_sec <- function(df){
-#   if (!"seg_sec" %in% names(df)) {
-#     t <- as.numeric(df$DateTimeLocal)
-#     d <- c(NA_real_, diff(t))
-#     step_med <- stats::median(d[is.finite(d) & d > 0], na.rm = TRUE)
-#     if (!is.finite(step_med)) step_med <- 30
-#     d[1] <- step_med; d[!is.finite(d)] <- 0; d[d < 0] <- 0; d[d > 5*step_med] <- step_med
-#     df$seg_sec <- d
-#   }
-#   df
-# }
-# 
-# # Join meta (run_time_hour) from pm_summary_upas by file
-# meta_by_file <- pm_summary_upas |> select(file, subject_id, upas_id, run_time_hour)
-# 
-# # Convenient label for orientation “state”
-# orient_state <- function(x_vest, z_bed, thr = 0.6){
-#   dplyr::case_when(
-#     x_vest >= thr & z_bed <  thr ~ "Vest",
-#     z_bed  >= thr & x_vest <  thr ~ "Bed",
-#     x_vest >= thr & z_bed  >= thr ~ "Vest+Bed",
-#     TRUE                          ~ "Other"
-#   )
-# }
-# 
-# 
-# night_hist_data <- function(df, run_hours, session = 1, worn_only = TRUE) {
-#   stopifnot("seg_sec" %in% names(df))
-#   stopifnot("worn_flag" %in% names(df))
-#   stopifnot("movement_prop10m" %in% names(df))
-# 
-#   # window
-#   run_start <- min(df$DateTimeLocal, na.rm = TRUE)
-#   run_end   <- run_start + run_hours * 3600
-#   s1_start <- run_start
-#   s1_end   <- min(run_end, run_start + 24 * 3600)
-#   s2_start <- s1_end
-#   s2_end   <- min(run_end, run_start + 48 * 3600)
-#   if (session == 1) { t0 <- s1_start; t1 <- s1_end } else { t0 <- s2_start; t1 <- s2_end }
-# 
-#   # overlap seconds with [t0, t1]
-#   seg_start <- df$DateTimeLocal
-#   seg_end   <- df$DateTimeLocal + df$seg_sec
-#   overlap   <- pmax(0, as.numeric(pmin(seg_end, t1) - pmax(seg_start, t0)))
-# 
-#   # masks (vectorized)
-#   night_ok  <- lubridate::hour(df$DateTimeLocal) < 5 | lubridate::hour(df$DateTimeLocal) >= 21
-#   worn_ok   <- if (worn_only) (df$worn_flag %in% TRUE) else rep(TRUE, nrow(df))
-# 
-#   eff_sec   <- ifelse(night_ok & worn_ok, overlap, 0)
-# 
-#   # bin movement_prop10m to 0.1 steps
-#   bks <- seq(0, 1, by = 0.1)                      # keep 0.1-wide bins (or 0.05 if you prefer)
-#   mv  <- pmax(0, pmin(1, df$movement_prop10m))    # clamp to [0,1]
-#   
-#   # regular bins first (so we inherit the usual labels like "[0,0.1]")
-#   bin_cut <- cut(mv,
-#                  breaks = bks,
-#                  include.lowest = TRUE,
-#                  right = TRUE)
-#   
-#   # relabel exact zeros into their own spike without changing your downstream code
-#   bin <- factor(ifelse(mv == 0, "[0]", as.character(bin_cut)), levels = c("[0]", levels(bin_cut)))
-#   
-#   
-#   
-#   suppressPackageStartupMessages({ library(dplyr); library(tidyr); library(tibble) })
-# 
-#   tibble(bin, seconds = eff_sec) %>%
-#     filter(!is.na(bin)) %>%                                   # drop NA-movement rows
-#     group_by(bin) %>%
-#     summarise(minutes = sum(seconds)/60, .groups = "drop") %>%
-#     complete(bin, fill = list(minutes = 0)) %>%
-#     mutate(prop = if (sum(minutes) > 0) minutes / sum(minutes) else 0)
-# }
-
-
-```
-
-## Plot 1 — Movement time-series (10-min prop), with day/night shading 
-shows the movement time-series with day/night shading
-```{r}
-# plot_movement_timeseries <- function(df, run_hours, title = NULL) {
-#   df <- df |>
-#     mutate(
-#       DateTimeLocal = as.POSIXct(DateTimeLocal, tz = "UTC"),
-#       movement_prop10m = if ("movement_prop10m" %in% names(df)) movement_prop10m else NA_real_
-#     ) |>
-#     arrange(DateTimeLocal)
-# 
-#   # in-run window
-#   run_start <- min(df$DateTimeLocal, na.rm = TRUE)
-#   run_end   <- run_start + run_hours*3600
-#   df_run    <- df |> filter(DateTimeLocal <= run_end)
-# 
-#   # night shading
-#   rects <- night_rects(min(df_run$DateTimeLocal), max(df_run$DateTimeLocal))
-# 
-#   ggplot(df_run, aes(DateTimeLocal, movement_prop10m)) +
-#     geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-#               inherit.aes = FALSE, alpha = 0.12) +
-#     geom_line(na.rm = TRUE) +
-#     scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
-#     labs(
-#       x = NULL, y = "Movement (10-min proportion)",
-#       title = title %||% "Movement over time (day/night shaded)"
-#     ) +
-#     theme_bw(base_size = 12)
-# }
-
-```
-
-## Plot 2 — Orientation (XDown ≈ vest; Zup/Zdown ≈ bed) + movement magnitude
-
-We plot x_vest and z_bed (0–1) as lines.
-
-We add a simple “movement magnitude” trace based on summed axis variance (rescaled 0–1) for visual context.
-
-```{r}
-# plot_orientation_timeseries <- function(df, run_hours, title = NULL) {
-#   df <- df |>
-#     ensure_seg_sec() |>
-#     mutate(
-#       DateTimeLocal = as.POSIXct(DateTimeLocal, tz = "UTC"),
-#       x_vest = if ("XDown" %in% names(df)) as.numeric(XDown)/100 else NA_real_,
-#       z_bed  = if ("Zup"  %in% names(df) | "Zdown" %in% names(df))
-#                  pmax(suppressWarnings(as.numeric(Zup)), suppressWarnings(as.numeric(Zdown)), na.rm = TRUE)/100
-#                else NA_real_,
-#       acc_mag = rowSums(cbind(
-#                   suppressWarnings(as.numeric(AccelXVar)),
-#                   suppressWarnings(as.numeric(AccelYVar)),
-#                   suppressWarnings(as.numeric(AccelZVar))
-#                 ), na.rm = TRUE)
-#     ) |>
-#     arrange(DateTimeLocal)
-# 
-#   # in-run window
-#   run_start <- min(df$DateTimeLocal, na.rm = TRUE)
-#   run_end   <- run_start + run_hours*3600
-#   df_run    <- df |> filter(DateTimeLocal <= run_end)
-# 
-#   # rescale acc magnitude to 0..1 for plotting
-#   rng <- range(df_run$acc_mag, na.rm = TRUE)
-#   df_run <- df_run |>
-#     mutate(acc_mag01 = if (is.finite(rng[1]) && diff(rng) > 0) (acc_mag - rng[1]) / diff(rng) else NA_real_)
-# 
-#   rects <- night_rects(min(df_run$DateTimeLocal), max(df_run$DateTimeLocal))
-# 
-#   p_orient <- ggplot(df_run, aes(DateTimeLocal)) +
-#     geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
-#               inherit.aes = FALSE, alpha = 0.12) +
-#     geom_line(aes(y = x_vest), linewidth = 0.6) +
-#     geom_line(aes(y = z_bed),  linewidth = 0.6, linetype = 2, col = "red") +
-#     scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
-#     labs(x = NULL, y = "Orientation (proportion)",
-#          subtitle = "Solid = XDown (vest); Dashed = max(Zup, Zdown) (bed)") +
-#     theme_bw(base_size = 12)
-# 
-#   p_move <- ggplot(df_run, aes(DateTimeLocal, acc_mag01)) +
-#     geom_rect(data = rects, aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
-#               inherit.aes = FALSE, alpha = 0.12) +
-#     geom_line(na.rm = TRUE) +
-#     scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
-#     labs(x = NULL, y = "Movement magnitude (scaled 0–1)",
-#          subtitle = "Sum of axis variances, rescaled") +
-#     theme_bw(base_size = 12)
-# 
-#   (p_orient / p_move) + plot_annotation(title = title %||% "Orientation + movement context")
-# }
-
-```
-
-## Plot 3 — Nighttime movement timing (adjacent vs. sporadic)
-
-This summarizes minutes moving while worn across the night hours. If bars concentrate in 21:00–23:00 and ~05:00 bins, that’s “adjacent to daytime”; if spread across the 00:00–04:00 bins, that’s “sporadic overnight”.
-
-```{r}
-# plot_night_by_hour <- function(df, run_hours, title = NULL, move_thr = 0.10) {
-#   df <- df |>
-#     mutate(DateTimeLocal = as.POSIXct(DateTimeLocal, tz = "UTC")) |>
-#     arrange(DateTimeLocal)
-# 
-#   run_start <- min(df$DateTimeLocal, na.rm = TRUE)
-#   run_end   <- run_start + run_hours * 3600
-#   df_run    <- df |> filter(DateTimeLocal <= run_end)
-# 
-#   # movement proxy
-#   if ("movement_prop10m" %in% names(df_run)) {
-#     moving <- df_run$movement_prop10m >= move_thr
-#   } else if ("moving_30s" %in% names(df_run)) {
-#     moving <- df_run$moving_30s == 1
-#   } else {
-#     moving <- rep(FALSE, nrow(df_run))
-#   }
-# 
-#   # worn flag (no recycling)
-#   worn <- if ("worn_flag" %in% names(df_run)) (df_run$worn_flag %in% TRUE) else rep(TRUE, nrow(df_run))
-# 
-#   # night
-#   night <- lubridate::hour(df_run$DateTimeLocal) < 5 | lubridate::hour(df_run$DateTimeLocal) >= 21
-# 
-#   # minutes credit
-#   minutes <- df_run$seg_sec / 60
-# 
-#   # hour-of-night ordering: 21,22,23,00,01,02,03,04,05
-#   hod      <- lubridate::hour(df_run$DateTimeLocal)
-#   hod_ord  <- ifelse(hod < 6, hod + 24, hod)
-#   bin      <- factor(hod_ord,
-#                      levels = c(21,22,23,24,25,26,27,28,29),
-#                      labels = c("21","22","23","00","01","02","03","04","05"))
-# 
-#   library(dplyr); library(tidyr); library(tibble); library(ggplot2)
-# 
-#   df_sum <- tibble(bin, minutes = ifelse(night & worn & moving, minutes, 0)) |>
-#     group_by(bin) |>
-#     summarise(minutes = sum(minutes, na.rm = TRUE), .groups = "drop") |>
-#     complete(bin, fill = list(minutes = 0))
-# 
-#   ggplot(df_sum, aes(bin, minutes)) +
-#     geom_col() +
-#     labs(x = "Hour of night", y = "Minutes moving (worn)",
-#          title = title %||% "Nighttime movement by hour",
-#          subtitle = "Higher bars at 21–23 or ~05 suggest adjacency to daytime; flat profile suggests sporadic night movement") +
-#     theme_bw(base_size = 12)
-# }
-# 
-# # plot_night_by_hour(df_i, run_h)
-```
-
-## Run for 1 plot
-
-```{r}
-# # pick one record to test
-# i <- 5
-# df <- list.upasr3_new[[i]]
-# 
-# # get run hours + labels from your summary for this file
-# file_i <- df$file[1]
-# ix     <- match(file_i, pm_summary_upas$file)
-# run_h  <- as.numeric(pm_summary_upas$run_time_hour[ix])
-# subj   <- pm_summary_upas$subject_id[ix]
-# upas   <- pm_summary_upas$upas_id[ix]
-# ttl    <- paste0(subj, " / UPAS ", upas, " — ", basename(file_i))
-# 
-# # make the three plots
-# p1 <- plot_movement_timeseries(df, run_h, title = ttl)
-# p2 <- plot_orientation_timeseries(df, run_h, title = ttl)
-# p3 <- plot_night_by_hour(df, run_h, title = ttl)
-# 
-# # preview in the Viewer/Plots pane
-# print(p1); print(p2); print(p3)
-# 
-# # (optional) save just these
-# # ggsave("test_movement_ts.png", p1, width = 12, height = 4, dpi = 200)
-# # ggsave("test_orientation_plus_movement.png", p2, width = 12, height = 6, dpi = 200)
-# # ggsave("test_night_movement_hist.png", p3, width = 8, height = 4, dpi = 200)
-
-```
-
-PLOT 2:
-* Rescaled sum = raw signal strength (continuous).
-* The biggest spike of movement = 1 (100%), everything else is relative at 30s level.
-* The raw variances are in arbitrary sensor units (mg²) and can be very large (hundreds to thousands). To plot them on a 0–1 scale, you typically divide by the maximum observed value in that session (or sometimes the 95th percentile to reduce the effect of outliers).
-
-
-
-
-```{r}
-# plot_night_movement_bins <- function(df, run_hours, session = 1, worn_only = TRUE,
-#                                      y = c("prop","minutes"), title = NULL) {
-#   y <- match.arg(y)
-#   dat <- night_hist_data(df, run_hours, session, worn_only)
-#   ggplot(dat, aes(x = bin, y = .data[[y]])) +
-#     geom_col() +
-#     labs(x = "10-min movement proportion bin", 
-#          y = if (y == "prop") "Share of night minutes" else "Minutes",
-#          title = title %||% sprintf("Night movement distribution (Session %d, %s)", 
-#                                     session, if (worn_only) "worn-only" else "all-night")) +
-#     theme_minimal(base_size = 12)
-# }
-# 
-# i <- 5
-# df_i <- list.upasr3_new[[i]]
-# run_h <- as.numeric(pm_summary_upas$run_time_hour[match(df_i$file[1], pm_summary_upas$file)])
-# plot_night_movement_bins(df_i, run_h, session = 1, worn_only = TRUE, y = "prop")
-
-```
-
-
-
-
-
-
-
-
-
-
-
-## Run for each file
-
-```{r}
-# Choose an output folder if you want to save
-
-
-# out_dir <- here::here("weekly_data_checks", "upas_data2025", "plots")
-# dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-# 
-# for (i in seq_along(list.upasr3_new)) {
-#   df <- list.upasr3_new[[i]]
-#   file_i <- df$file[1]
-#   meta   <- meta_by_file |> filter(file == file_i)
-#   if (!nrow(meta)) next
-# 
-#   run_h <- as.numeric(meta$run_time_hour[1])
-#   subj  <- meta$subject_id[1]
-#   upas  <- meta$upas_id[1]
-# 
-#   ttl <- paste0(subj, " / UPAS ", upas, " — ", basename(file_i))
-# 
-#   p1 <- plot_movement_timeseries(df, run_h, title = ttl)
-#   p2 <- plot_orientation_timeseries(df, run_h, title = ttl)
-#   p3 <- plot_night_movement_hist(df, run_h, title = ttl)
-# 
-#   # Preview in RStudio:
-#   # print(p1); print(p2); print(p3)
-# 
-#   # Save
-#   ggsave(file.path(out_dir, paste0(subj, "_", upas, "_movement_ts.png")), p1, width = 12, height = 4, dpi = 200)
-#   ggsave(file.path(out_dir, paste0(subj, "_", upas, "_orientation_plus_movement.png")), p2, width = 12, height = 6, dpi = 200)
-#   ggsave(file.path(out_dir, paste0(subj, "_", upas, "_night_movement_hist.png")), p3, width = 8, height = 4, dpi = 200)
-# }
-
-```
-
-
-Threshold for “moving” at night: move_thr = 0.10 in plot_night_movement_hist(); set to 0.05 or 0.20 to adjust sensitivity.
-
-Orientation threshold: orient_state() and your thinking use 0.6 (60%) for “high”. You can use that to create a categorical timeline if you want a 4th plot (Vest/Bed/Other).
-
-Day/night definition: currently 05:00–21:00 = day. Adjust in is_day() if needed.
-
-Rounding: your summary rounds to 2 decimals; the plots show full traces, so tiny mismatches from rounding won’t matter.
 

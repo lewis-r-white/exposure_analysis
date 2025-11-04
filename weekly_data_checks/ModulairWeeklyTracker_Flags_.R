@@ -157,7 +157,6 @@ summary_mod_ <- summary_mod[,c("Monitor","Latest_Flag_json","Any_Flag_24hr_json"
 
 write_csv(summary_mod_, here::here("weekly_data_checks", "modulair_check_outputs", paste0("modulair_latestflag_", Sys.Date(), ".csv")))
 
-
 #
 
 
