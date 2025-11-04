@@ -47,15 +47,15 @@ library(here)
 ```{r,echo = FALSE}
 
 ##Import raw UPAS files
-path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/ASANTEKWA UPAS DATA_20251018"
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/ABUDWUM UPAS DATA_20251026"
 
 file_upas <- list.files(path, pattern = "*.txt", full.names = F,recursive = TRUE)
 
 length(file_upas)
 
 # specify meta data 
-date = "20251018"
-community = "asantekwa"
+date = "20251026"
+community = "abudwum"
 ```
 
 
@@ -269,7 +269,7 @@ function_read_UPAS_data_ <- function(filepath) {
     data_raw <- data_raw[-bad_rows, , drop = FALSE]
   }
   
-  # 8) Get head level data 
+  # 8) Get head level data
   data <- data_raw %>%
     dplyr::mutate(
       UPASserial = subset(data_parameter, PARAMETER == "UPASserial")$VALUE[1],
@@ -281,7 +281,9 @@ function_read_UPAS_data_ <- function(filepath) {
       LifetimeSampleRuntime = subset(data_parameter, PARAMETER == "LifetimeSampleRuntime")$VALUE[1],
       LifetimeBatteryRuntime = subset(data_parameter, PARAMETER == "LifetimeBatteryRuntime")$VALUE[1],
       LifetimeSamplePumptime = subset(data_parameter, PARAMETER == "LifetimeSamplePumptime")$VALUE[1],
-      SampledVolume = readr::parse_number(subset(data_parameter, PARAMETER == "SampledVolumeOffset")$VALUE[1]),
+      SampledVolume = readr::parse_number(
+        subset(data_parameter, PARAMETER == "SampledVolumeOffset")$VALUE[1]
+      ),
       
       OverallDuration = subset(data_parameter, PARAMETER == "OverallDuration")$VALUE[1],
       PumpingDuration = subset(data_parameter, PARAMETER == "PumpingDuration")$VALUE[1],
@@ -294,7 +296,7 @@ function_read_UPAS_data_ <- function(filepath) {
       ShutdownMode = subset(data_parameter, PARAMETER == "ShutdownMode")$VALUE[1],
       PMSensorInterval = subset(data_parameter, PARAMETER == "PMSensorInterval")$VALUE[1],
       FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1]
-      #compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0)
+      #compliance = ifelse((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100), 1, 0) ## COMMENTED OUT BECAUSE AccelComplianceCnt VARIABLES IN NEW UPAS DATA IS ALREADY THE COMPLIANCE ROLL MEAN (BELOW), SO THIS I SNO LONGER NECESSARY
     )
   
   # data$compliance_rollmean <- ifelse(
@@ -303,127 +305,53 @@ function_read_UPAS_data_ <- function(filepath) {
   
   
   
-  # ---- DERIVED FEATURES (movement proportion, posture, lux) ----
-  # robust time vector for ordering & window length
+  # ---- DERIVED FEATURES (movement, LUX) ----
   ts <- suppressWarnings(lubridate::ymd_hms(data$DateTimeLocal, tz = "UTC"))
   if (all(is.na(ts)) && "UnixTime" %in% names(data)) {
     ts <- as.POSIXct(as.numeric(data$UnixTime),
                      origin = "1970-01-01",
                      tz = "UTC")
   }
-  data$.__ts <- ts  # temp; safe even if timestamp is added later upstream
+  data$.__ts <- ts
   
-  # make sure the few fields we need are numeric (some files come in as chr)
   numify <- function(x)
     suppressWarnings(readr::parse_number(as.character(x)))
-  for (v in c(
-    "AccelXVar",
-    "AccelYVar",
-    "AccelZVar",
-    "AccelComplianceCnt",
-    "StepCount",
-    "XDown",
-    "Zup",
-    "Zdown",
-    "LUX",
-    "DutyCycle"
-  )) {
+  for (v in c("AccelXVar",
+              "AccelYVar",
+              "AccelZVar",
+              "AccelComplianceCnt",
+              "LUX",
+              "DutyCycle")) {
     if (v %in% names(data))
       data[[v]] <- numify(data[[v]])
   }
   
-  
   data <- data %>%
-    arrange(.__ts) %>%                           # order by time
+    arrange(.__ts) %>%
     mutate(
-      moving_30s = as.integer((AccelXVar > 100) |
-                                (AccelYVar > 100) |
-                                (AccelZVar > 100)),
-      x_vest     = XDown / 100,
-      # 0..1
-      z_bed      = pmax(Zup, Zdown, na.rm = TRUE) / 100,
-      LUX_s      = zoo::rollmedian(LUX, 3, fill = NA)
+      LUX_s = zoo::rollmedian(LUX, 3, fill = NA),
+      seg_sec = derive_seg_sec(.__ts, PMSensorInterval)
     )
   
-  data$seg_sec <- derive_seg_sec(data$.__ts, data$PMSensorInterval)
+  # --- Motion-based compliance -----------------------------------------
+  # Convert firmware 0–20 count to proportion (0–1)
+  data$AccelComplianceCnt_prop <- data$AccelComplianceCnt / 20
   
-  # window length ≈ 10 min based on actual interval
-  dt_sec <- stats::median(diff(as.numeric(data$.__ts)), na.rm = TRUE)
-  if (!is.finite(dt_sec))
-    dt_sec <- 30
-  k <- max(1, round((10 * 60) / dt_sec))
+  # Boolean "worn" indicator directly from firmware logic
+  data$worn_flag <- as.integer(data$AccelComplianceCnt > 0)
   
-  have_cnt  <- "AccelComplianceCnt" %in% names(data) &&
-    any(is.finite(data$AccelComplianceCnt))
-  have_step <- "StepCount" %in% names(data)          &&
-    any(is.finite(data$StepCount))
-  rev       <- if ("UPASexpRev" %in% names(data))
-    data$UPASexpRev[1]
-  else
-    NA_character_
-  duty_num  <- suppressWarnings(as.numeric(data$DutyCycle[1]))
+  # Keep AccelXVar sum for QC plotting only
+  if (all(c("AccelXVar", "AccelYVar", "AccelZVar") %in% names(data))) {
+  data$acc_mag <- rowSums(cbind(data$AccelXVar, data$AccelYVar, data$AccelZVar), na.rm = TRUE)
+} else {
+  data$acc_mag <- NA_real_
+}
+
   
-  # choose source per manual
-  if (isTRUE(duty_num == 100) &&
-      !identical(rev, "0BR2") && have_step) {
-    data$movement_prop10m <- zoo::rollapply(
-      as.integer(data$StepCount > 0),
-      k,
-      mean,
-      align = "right",
-      partial = FALSE,
-      fill = NA
-    )
-  } else if (!isTRUE(duty_num == 100) &&
-             !identical(rev, "0BR2") && have_cnt) {
-    data$movement_prop10m <- data$AccelComplianceCnt / 20
-  } else if (have_cnt) {
-    data$movement_prop10m <- data$AccelComplianceCnt / 20
-  } else {
-    data$movement_prop10m <- zoo::rollapply(
-      data$moving_30s,
-      k,
-      mean,
-      align = "right",
-      partial = FALSE,
-      fill = NA
-    )
-  }
-  
-  # simple posture-based worn/not-worn (kept for plotting / context)
-  data$worn_any <- (data$x_vest >= 0.6) | (data$z_bed >= 0.6)
-
-  # --- stricter wearing flag: orientation AND recent movement -------------
-  # choose a binary movement source (same priority as for movement_prop10m)
-  base_move_bin <- if (isTRUE(duty_num == 100) && !identical(rev, "0BR2") && have_step) {
-    as.integer(data$StepCount > 0)
-  } else if (have_cnt) {
-    as.integer(data$AccelComplianceCnt > 0)
-  } else {
-    data$moving_30s
-  }
-
-  # window defining "recent" movement (last 30 min)
-  dt_sec <- stats::median(diff(as.numeric(data$.__ts)), na.rm = TRUE)
-  if (!is.finite(dt_sec)) dt_sec <- 30
-  k_alive <- max(1, round((30 * 60) / dt_sec))
-
-  # any movement in the last 30 min?
-  data$move_recent30m <- zoo::rollapply(
-    base_move_bin, k_alive, max,
-    align = "right", partial = TRUE, fill = 0
-  )
-
-  # strict wearing definition
-  data$worn_flag <- ((data$x_vest >= 0.6) | (data$z_bed >= 0.6)) & (data$move_recent30m == 1)
-
-  # keep the raw 30s motion flag for QC
-  data$compliance_flag_30s <- data$moving_30s
-  
-  # drop temp time
+  # --- Clean-up --------------------------------------------------------
   data$.__ts <- NULL
-  
   return(data)
+  
 }
 ```
 
@@ -450,33 +378,43 @@ function_read_UPAS_data_error <- function(filepath) {
   )
 
   # ---- salvage the log body lines ----
-  con <- file(filepath, "r")
-  on.exit(close(con), add = TRUE)
-  valid_lines <- character()   # <-- must initialize; you had this commented out
-  line_counter <- 0
+con <- file(filepath, "r")
+on.exit(close(con), add = TRUE)
 
-  while (length(line <- readLines(con, n = 1, warn = FALSE)) > 0) {
-    line_counter <- line_counter + 1
-    if (line_counter < 116) next
-    tryCatch({
-      readr::read_csv(I(line), col_names = FALSE, show_col_types = FALSE,
-                      locale = readr::locale(encoding = enc))
-      valid_lines <- c(valid_lines, line)
-    }, error = function(e) {
-      message("Skipping invalid line: ", line)
-    })
-  }
+# read all lines, starting after header (~119)
+all_lines <- readLines(con, warn = FALSE)
+body_lines <- all_lines[120:length(all_lines)]
 
-  # combine salvaged lines
-  data_raw <- readr::read_csv(
-    paste(valid_lines, collapse = "\n"),
+# join lines into a single CSV-like string
+csv_text <- paste(body_lines, collapse = "\n")
+
+# read as a normal CSV (with the same encoding)
+data_raw <- suppressWarnings(
+  readr::read_csv(
+    csv_text,
     col_names = FALSE,
     show_col_types = FALSE,
     locale = readr::locale(encoding = enc)
   )
+)
 
   # apply column names and type-convert
-  colnames(data_raw) <- upas_colnames[1, ]
+  # Ensure matching number of columns
+if (ncol(data_raw) != ncol(upas_colnames)) {
+  warning("Column count mismatch: attempting to align by truncation/padding")
+  length_diff <- ncol(upas_colnames) - ncol(data_raw)
+  if (length_diff > 0) {
+    # pad with NAs if too few columns
+    data_raw[(ncol(data_raw) + 1):ncol(upas_colnames)] <- NA
+  } else {
+    # truncate if too many columns
+    data_raw <- data_raw[1:ncol(upas_colnames)]
+  }
+}
+colnames(data_raw) <- upas_colnames[1, ]
+
+
+
   data_raw <- readr::type_convert(
     data_raw, locale = readr::locale(encoding = enc), na = c("", "NA")
   )
@@ -506,88 +444,51 @@ function_read_UPAS_data_error <- function(filepath) {
       FlowOffset = subset(data_parameter, PARAMETER == "FlowOffset")$VALUE[1]
     )
 
-  # robust time vector
+  # ---- DERIVED FEATURES (movement, LUX) ----
   ts <- suppressWarnings(lubridate::ymd_hms(data$DateTimeLocal, tz = "UTC"))
   if (all(is.na(ts)) && "UnixTime" %in% names(data)) {
-    ts <- as.POSIXct(as.numeric(data$UnixTime), origin = "1970-01-01", tz = "UTC")
+    ts <- as.POSIXct(as.numeric(data$UnixTime),
+                     origin = "1970-01-01",
+                     tz = "UTC")
   }
   data$.__ts <- ts
-
-  # force numerics where needed
-  numify <- function(x) suppressWarnings(readr::parse_number(as.character(x)))
-  for (v in c("AccelXVar","AccelYVar","AccelZVar","AccelComplianceCnt","StepCount",
-              "XDown","Zup","Zdown","LUX","DutyCycle")) {
-    if (v %in% names(data)) data[[v]] <- numify(data[[v]])
+  
+  numify <- function(x)
+    suppressWarnings(readr::parse_number(as.character(x)))
+  for (v in c("AccelXVar",
+              "AccelYVar",
+              "AccelZVar",
+              "AccelComplianceCnt",
+              "LUX",
+              "DutyCycle")) {
+    if (v %in% names(data))
+      data[[v]] <- numify(data[[v]])
   }
-
+  
   data <- data %>%
     arrange(.__ts) %>%
     mutate(
-      moving_30s = as.integer((AccelXVar > 100) | (AccelYVar > 100) | (AccelZVar > 100)),
-      x_vest     = XDown / 100,
-      z_bed      = pmax(Zup, Zdown, na.rm = TRUE) / 100,
-      LUX_s      = zoo::rollmedian(LUX, 3, fill = NA)
+      LUX_s = zoo::rollmedian(LUX, 3, fill = NA),
+      seg_sec = derive_seg_sec(.__ts, PMSensorInterval)
     )
-
-  # --- seg_sec using the shared helper ---
-  data$seg_sec <- derive_seg_sec(data$.__ts, data$PMSensorInterval)
-
-  # window len for 10-min roll
-  dt_sec <- stats::median(diff(as.numeric(data$.__ts)), na.rm = TRUE)
-  if (!is.finite(dt_sec)) dt_sec <- 30
-  k <- max(1, round((10 * 60) / dt_sec))
-
-  have_cnt  <- "AccelComplianceCnt" %in% names(data) && any(is.finite(data$AccelComplianceCnt))
-  have_step <- "StepCount" %in% names(data) && any(is.finite(data$StepCount))
-  rev       <- if ("UPASexpRev" %in% names(data)) data$UPASexpRev[1] else NA_character_
-  duty_num  <- suppressWarnings(as.numeric(data$DutyCycle[1]))
-
-  if (isTRUE(duty_num == 100) && !identical(rev, "0BR2") && have_step) {
-    data$movement_prop10m <- zoo::rollapply(as.integer(data$StepCount > 0),
-                                            k, mean, align = "right",
-                                            partial = FALSE, fill = NA)
-  } else if (!isTRUE(duty_num == 100) && !identical(rev, "0BR2") && have_cnt) {
-    data$movement_prop10m <- data$AccelComplianceCnt / 20
-  } else if (have_cnt) {
-    data$movement_prop10m <- data$AccelComplianceCnt / 20
-  } else {
-    data$movement_prop10m <- zoo::rollapply(data$moving_30s,
-                                            k, mean, align = "right",
-                                            partial = FALSE, fill = NA)
-  }
-
-  # simple posture-based worn/not-worn (kept for plotting / context)
-  data$worn_any <- (data$x_vest >= 0.6) | (data$z_bed >= 0.6)
-
-  # --- stricter wearing flag: orientation AND recent movement -------------
-  # choose a binary movement source (same priority as for movement_prop10m)
-  base_move_bin <- if (isTRUE(duty_num == 100) && !identical(rev, "0BR2") && have_step) {
-    as.integer(data$StepCount > 0)
-  } else if (have_cnt) {
-    as.integer(data$AccelComplianceCnt > 0)
-  } else {
-    data$moving_30s
-  }
-
-  # window defining "recent" movement (last 30 min)
-  dt_sec <- stats::median(diff(as.numeric(data$.__ts)), na.rm = TRUE)
-  if (!is.finite(dt_sec)) dt_sec <- 30
-  k_alive <- max(1, round((30 * 60) / dt_sec))
-
-  # any movement in the last 30 min?
-  data$move_recent30m <- zoo::rollapply(
-    base_move_bin, k_alive, max,
-    align = "right", partial = TRUE, fill = 0
-  )
-
-  # strict wearing definition
-  data$worn_flag <- ((data$x_vest >= 0.6) | (data$z_bed >= 0.6)) & (data$move_recent30m == 1)
-
-  # keep the raw 30s motion flag for QC
-  data$compliance_flag_30s <- data$moving_30s
   
-  data$.__ts <- NULL
+  # --- Motion-based compliance -----------------------------------------
+  # Convert firmware 0–20 count to proportion (0–1)
+  data$AccelComplianceCnt_prop <- data$AccelComplianceCnt / 20
+  
+  # Boolean "worn" indicator directly from firmware logic
+  data$worn_flag <- as.integer(data$AccelComplianceCnt > 0)
+  
+  # Keep AccelXVar sum for QC plotting only
+  if (all(c("AccelXVar", "AccelYVar", "AccelZVar") %in% names(data))) {
+  data$acc_mag <- rowSums(cbind(data$AccelXVar, data$AccelYVar, data$AccelZVar), na.rm = TRUE)
+} else {
+  data$acc_mag <- NA_real_
+}
 
+  
+  # --- Clean-up --------------------------------------------------------
+  data$.__ts <- NULL
   return(data)
 }
 
@@ -657,7 +558,7 @@ column_debugging <- c("FilterDP", "AtmoT", "AtmoRH", "PM2_5MC", "MassFlowFactory
 
 numeric_like <- c(
   "PumpingDuration","PumpingFlowFactory","PumpingFlowRate",
-  "PM2_5MC",
+  "PM2_5MC", "MassFlowFactory",
   "AccelComplianceCnt","StepCount",
   "AccelXVar","AccelYVar","AccelZVar",
   "XDown","Zup","Zdown","LUX"
@@ -904,19 +805,20 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   
 
   
-  # --- ADD: WEAR FLAG BASED ON X/Y/Z UP/DOWN ---
-  # --- WEAR FLAG (prefer the strict flag from the reader) ---
-  if ("worn_flag" %in% names(list.upasr3_new[[i]])) {
-    # already computed in the reader: orientation + recent movement
-    list.upasr3_new[[i]]$worn_flag <- as.logical(list.upasr3_new[[i]]$worn_flag)
-  } else if ("worn_any" %in% names(list.upasr3_new[[i]])) {
-    # posture-only fallback
-    list.upasr3_new[[i]]$worn_flag <- as.logical(list.upasr3_new[[i]]$worn_any)
-  } else if ("movement_prop10m" %in% names(list.upasr3_new[[i]])) {
-    # last fallback: movement-only threshold
-    list.upasr3_new[[i]]$worn_flag <- list.upasr3_new[[i]]$movement_prop10m >= 0.05
-  } else {
-    list.upasr3_new[[i]]$worn_flag <- NA
+
+  
+    # --- ADD: WEAR FLAG
+  if (!("worn_flag" %in% names(list.upasr3_new[[i]]))) {
+    if ("AccelComplianceCnt" %in% names(list.upasr3_new[[i]])) {
+      list.upasr3_new[[i]]$worn_flag <- as.integer(list.upasr3_new[[i]]$AccelComplianceCnt > 0)
+    } else {
+      list.upasr3_new[[i]]$worn_flag <- NA
+    }
+  }
+  list.upasr3_new[[i]]$worn_flag <- as.logical(list.upasr3_new[[i]]$worn_flag)
+  
+  if ("AccelComplianceCnt" %in% names(list.upasr3_new[[i]])) {
+    list.upasr3_new[[i]]$compliance_prop <- list.upasr3_new[[i]]$AccelComplianceCnt / 20
   }
 
   
@@ -953,14 +855,25 @@ if (!("seg_sec" %in% names(list.upasr3_new[[i]])) ||
   } else {
     pm_summary_upas$compliance_percent[i] <- NA_real_
   }
-
+  
+  
   
   ## ----- IN RUN STATS --------
-  # PM (in-run)
-  pm_summary_upas$pm_min[i]    <- round(safe_stat(df$PM2_5MC_clean[in_run], min), 2)
-  pm_summary_upas$pm_median[i] <- round(safe_stat(df$PM2_5MC_clean[in_run], median), 2)
-  pm_summary_upas$pm_mean[i]   <- round(safe_stat(df$PM2_5MC_clean[in_run], mean), 2)
-  pm_summary_upas$pm_max[i]    <- round(safe_stat(df$PM2_5MC_clean[in_run], max), 2)
+  # --- PM (in-run, both unweighted and weighted) ---
+  df_inrun <- df[in_run, ]
+  df_inrun$PM2_5MC_clean <- as.numeric(df_inrun$PM2_5MC_clean)
+  
+  # 
+  ## ----- IN RUN STATS --------
+  df_inrun <- df[in_run, ] %>%
+    arrange(DateTimeLocal) %>%
+    mutate(PM2_5MC_filled = zoo::na.locf(PM2_5MC_clean, na.rm = FALSE))
+  
+  # PM stats (corrected for PM every 15 minute idiosyncrasy)
+  pm_summary_upas$pm_min[i]    <- round(safe_stat(df_inrun$PM2_5MC_clean, min), 2)
+  pm_summary_upas$pm_max[i]    <- round(safe_stat(df_inrun$PM2_5MC_clean, max), 2)
+  pm_summary_upas$pm_mean[i]   <- round(mean(df_inrun$PM2_5MC_filled, na.rm = TRUE), 2)
+  pm_summary_upas$pm_median[i] <- round(median(df_inrun$PM2_5MC_filled, na.rm = TRUE), 2)
   
   # Temperature (in-run)
   pm_summary_upas$temp_min[i]  <- round(safe_stat(df$AtmoT_clean[in_run], min), 2)

@@ -1,0 +1,468 @@
+---
+title: "PurpleAir_QC"
+author: "Kholiswa Tsotetsi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+
+library(data.table)
+library(dplyr)
+library(xts)
+library(dygraphs)
+library(readr) #for read_csv function
+library(ggpubr)
+library(readr)
+library(magrittr)
+library(purrr)
+library(stringr)
+
+
+
+```
+***     
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+##Read in PurpleAir Files for All Communities
+ 
+purpleair <- list.dirs(path = "Z:/CLF_Ghana/Community_Level_Exposures/Community_PM/PurpleAir/Raw/", full.names = FALSE, recursive = FALSE)
+
+
+```
+***
+
+
+
+ ***  
+```{r, echo = FALSE}
+
+
+list.purpleair <- list()
+problem_files <- list()
+
+##################################################
+### Read in all csv files for each community    ##
+##################################################
+
+for(i in 1:length(purpleair)){
+  
+  filenames_purpleair <- list.files(path = paste0( "Z:/CLF_Ghana/Community_Level_Exposures/Community_PM/PurpleAir/Raw/",purpleair[i]),recursive = T, pattern = "*.csv", full.names = T)
+  
+  list.files <- list()
+  
+  colname_list <-c("UTCDateTime","mac_address","firmware_ver","hardware" ,"current_temp_f","current_humidity",   "current_dewpoint_f","pressure" ,"adc" ,"mem", "rssi","uptime","pm1_0_cf_1","pm2_5_cf_1","pm10_0_cf_1","pm1_0_atm","pm2_5_atm","pm10_0_atm" ,"pm2.5_aqi_cf_1", "pm2.5_aqi_atm" , "p_0_3_um","p_0_5_um","p_1_0_um","p_2_5_um","p_5_0_um","p_10_0_um" ,"pm1_0_cf_1_b","pm2_5_cf_1_b","pm10_0_cf_1_b", "pm1_0_atm_b" ,"pm2_5_atm_b" ,"pm10_0_atm_b","pm2.5_aqi_cf_1_b","pm2.5_aqi_atm_b" , "p_0_3_um_b","p_0_5_um_b","p_1_0_um_b","p_2_5_um_b"  ,"p_5_0_um_b" ,"p_10_0_um_b" ,"gas")
+  
+  for(j in 1:length(filenames_purpleair)){
+    
+    tryCatch({
+      
+     encoding <- guess_encoding(filenames_purpleair[j])
+
+    rawfile <- read_csv(filenames_purpleair[j], col_names = colname_list ,show_col_types = FALSE, skip_empty_rows = T,locale = readr::locale(encoding = encoding$encoding), guess_max = 10000)[-1,]
+      
+  problems <- problems(rawfile)
+  bad_rows <- problems$row
+  
+  # Count the number of  problematic rows
+
+  rawfile$badrows <- nrow(problems)
+  
+  
+  # Make sure that all columns, aside from the ones mentioned below, are converted to numeric
+      list.files[[j]] <- rawfile
+      list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")] <- lapply(list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")], as.numeric)
+      
+      list.files[[j]]$community <- tolower(str_extract(purpleair[i],"[^_]+"))
+      list.files[[j]]$filename <- filenames_purpleair[j]
+      files <- data.table::rbindlist(list.files, fill = TRUE)
+      
+    ## Create a second column for community to catch if for some reason, the first one didn't work and returns 'NA'
+      files$community_2 <- tolower(str_extract(purpleair[i],"[^_]+"))
+      files$vname <- ifelse(is.na(files$community), files$community_2, files$community)
+      files <- files %>% dplyr::select(-(c(community,community_2)))
+      
+     },
+      error =function(e){
+        
+        warning(paste0("There may be an issue uploading file:",filenames_purpleair[i],". Try loading again."))
+        
+        filepath <- filenames_purpleair[j]
+
+        encoding <- guess_encoding(filepath)
+
+        rawfile <- read_csv(filepath, col_names = colname_list ,show_col_types = FALSE)[-1,]
+      
+       problems <- problems(rawfile)
+        bad_rows <- problems$row
+  
+  # Remove the problematic rows
+
+      rawfile$badrows <- nrow(problems)
+        
+
+        
+        list.files[[j]] <-  as.data.frame(lapply(rawfile, iconv, from = "ASCII" , to = "UTF8"))
+        
+        
+        list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")] <- lapply(list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")], as.numeric)
+        list.files[[j]]$community <- tolower(str_extract(purpleair[i],"[^_]+"))
+        list.files[[j]]$filename <- filenames_purpleair[j]
+        files <- data.table::rbindlist(list.files, fill = TRUE)
+        
+    ## Create a second column for community to catch if for some reason, the first one didn't work and returns 'NA'
+        files$community_2 <- tolower(str_extract(purpleair[i],"[^_]+"))
+        files$vname <- ifelse(is.na(files$community), files$community_2, files$community)
+        files <- files %>% dplyr::select(-(c(community,community_2)))
+                   }, finally={
+                      
+                      filepath <- filenames_purpleair[j]
+                      # rawfile <- fread(filepath, col_names = colname_list ,show_col_types = FALSE)[-1,]
+                     print(paste0("Issues reading file: ", filenames_purpleair[j], " into R. Look at raw csv file. "))
+                     # problem_df <- data.frame(Problem_File = NA, Community = NA)
+                     # problem_df$Problem_File = filenames_purpleair[j]
+                     # problem_df$Community = tolower(str_extract(purpleair[i],"[^_]+"))
+                     # problem_files[[j]] <- problem_df
+
+                     next})
+  }         
+  
+  list.purpleair[[i]] <- files
+
+
+  
+}
+
+
+## Combine into one dataframe
+purpleair_latest24 <- rbindlist(list.purpleair) 
+
+
+
+
+
+
+
+```
+
+
+
+```{r, echo = FALSE}
+
+purpleair_latest24$timestamp <- as.POSIXct(purpleair_latest24$UTCDateTime, format= "%Y/%m/%dT%H:%M:%Sz", tz="UTC")
+
+purpleair_latest24$tempc <- (purpleair_latest24$current_temp_f - 32) * (5/9) 
+
+
+
+##Maximum Standard Range : >= 1,000 ug/m3 - Set These to Missing?(https://www2.purpleair.com/products/purpleair-pa-ii)
+##Effective Range Set to 0 - 500ug/m3 (Limit to this?)
+purpleair_latestnov24_$pm2_5_atm_a <- ifelse(purpleair_latestnov24_$pm2_5_atm > 1000 , NA, purpleair_latestnov24_$pm2_5_atm)
+
+purpleair_latestnov24_$pm2_5_atm_b_ <- ifelse(purpleair_latestnov24_$pm2_5_atm_b > 1000 , NA, purpleair_latestnov24_$pm2_5_atm_b)
+
+
+
+
+
+## Compute difference and percent difference
+purpleair_latestnov24_$perdiff <- abs(purpleair_latestnov24_$pm2_5_atm_a - purpleair_latestnov24_$pm2_5_atm_b_)/purpleair_latestnov24_$pm2_5_atm_a 
+
+purpleair_latestnov24_$diff <- abs(purpleair_latestnov24_$pm2_5_atm_a - purpleair_latestnov24_$pm2_5_atm_b_)
+
+
+#Some sensors have a value of 0 causing the percent difference to be 0 so this is set to NA
+purpleair_latestnov24_$perdiff <- ifelse(is.infinite(purpleair_latestnov24_$perdiff), NA, purpleair_latestnov24_$perdiff)
+
+
+## Version 2 - Final PM2.5 based on average between the two sensors if below 20% if over 100ug/m3
+purpleair_latestnov24_$pm2_5_atm_final <- ifelse(purpleair_latestnov24_$pm2_5_atm_a <= 100 & purpleair_latestnov24_$pm2_5_atm_b_ <= 100 & purpleair_latestnov24_$diff < 11, (purpleair_latestnov24_$pm2_5_atm_a + purpleair_latestnov24_$pm2_5_atm_b)/2,
+                                      ifelse(purpleair_latestnov24_$pm2_5_atm_a > 100 & purpleair_latestnov24_$pm2_5_atm_b_ > 100 & purpleair_latestnov24_$perdiff < 0.21, (purpleair_latestnov24_$pm2_5_atm_a + purpleair_latestnov24_$pm2_5_atm_b_)/2, NA))
+
+
+```
+
+```{r, echo = FALSE}
+
+################################################
+###    Number of expected records per day? #####
+################################################
+
+
+
+check <- readRDS("C:/Users/tsotek01/Downloads/purpleair_community_r3.rds")
+#Through Feb 2024
+# [1] "community_id"       "timestamp"          "pm2_5_atm"          "pm2_5_atm_b"        "pm2_5_atm_a_"       "pm2_5_atm_b_"      
+#  [7] "perdiff"            "diff"               "pm2_5_atm_final"    "current_temp_f"     "current_humidity"   "current_dewpoint_f"
+
+
+check_short <- check[,c(1:4,10,11,12)]
+oct_short <- purpleair_oct24_v2[,c("vname","corrected_timestamp_v2","pm2_5_atm","pm2_5_atm_b","current_temp_f","current_humidity","current_dewpoint_f")]
+colnames(oct_short ) <- colnames(check_short)
+
+# purpleair_nov 
+
+nov_short <- purpleair_nov[,c("vname","timestamp","pm2_5_atm","pm2_5_atm_b","current_temp_f","current_humidity","current_dewpoint_f")] 
+colnames(nov_short) <- colnames(check_short)
+
+
+purpleair_todate <- bind_rows(check_short,oct_short,nov_short)
+
+purpleair_todate_dedup <- purpleair_todate[!duplicated(purpleair_todate),]
+
+
+
+#################################################################
+## Check Summary Stats of Temperature and Relative Humidity    ##
+################################################################
+
+## If temperature is above 120F or Equal to 0, set to NA
+summary(purpleair_todate_dedup$current_temp_f)
+
+purpleair_todate_dedup$tempf_updated <- ifelse(purpleair_todate_dedup$current_temp_f > 120 |purpleair_todate_dedup$current_temp_f == 0 , NA, purpleair_todate_dedup$current_temp_f )
+
+
+## If relative humidity is above 98 or equal to 0 , set to NA
+
+summary(purpleair_todate_dedup$current_humidity)
+
+purpleair_todate_dedup$current_humidity <- ifelse(purpleair_todate_dedup$current_humidity >= 98 |purpleair_todate_dedup$current_humidity == 0 , NA, purpleair_todate_dedup$current_humidity )
+
+
+
+```
+
+
+```{r, echo = FALSE}
+###########################################################
+## Create 2 New Variables based on Effective Range       ##
+## (https://www2.purpleair.com/products/purpleair-pa-ii) ##
+###########################################################
+
+## Check Correlation by Community 
+sensor_corr <- data.frame(community = rep(NA,length( unique(purpleair_oct24_v2$vname))), correlation = rep(NA,length( unique(purpleair_oct24_v2$vname))) )
+
+for (i in 1:length(unique(purpleair_feb24_v2$vname))){
+  
+  purpleair_feb24_v2_vname <- purpleair_feb24_v2[purpleair_feb24_v2$vname == unique(purpleair_feb24_v2$vname)[i],]
+  sensor_corr$community[i] <- unique(purpleair_feb24_v2$vname)[i]
+  sensor_corr$correlation[i] = cor(purpleair_feb24_v2_vname$pm2_5_atm_a_,purpleair_feb24_v2_vname$pm2_5_atm_b_, use="na.or.complete")
+}
+
+
+##Maximum Standard Range : >= 1,000 ug/m3 - Set These to Missing?(https://www2.purpleair.com/products/purpleair-pa-ii)
+##Effective Range Set to 0 - 500ug/m3 (Limit to this?)
+
+purpleair_feb24_v2$pm2_5_atm_a_ <- ifelse(purpleair_feb24_v2$pm2_5_atm_a_ > 500 , NA, purpleair_feb24_v2$pm2_5_atm_a_)
+purpleair_feb24_v2$pm2_5_atm_b_ <- ifelse(purpleair_feb24_v2$pm2_5_atm_b_ > 500 , NA, purpleair_feb24_v2$pm2_5_atm_b_)
+
+
+## Compute difference and percent difference
+purpleair_feb24_v2$perdiff <- abs(purpleair_feb24_v2$pm2_5_atm_a_ - purpleair_feb24_v2$pm2_5_atm_b_)/purpleair_feb24_v2$pm2_5_atm_a_ 
+purpleair_feb24_v2$diff <- abs(purpleair_feb24_v2$pm2_5_atm_a_ - purpleair_feb24_v2$pm2_5_atm_b_)
+
+
+# Maximum consistency error (PM2.5 standard)	±10% at 100 to 500μg/m³ & ±10μg/m³ at 0 to 100μg/m³ 
+## Final PM2.5 based on average between the two sensors using the thresholds above
+
+
+purpleair_feb24_v2$pm2_5_atm_final <- ifelse(purpleair_feb24_v2$pm2_5_atm_a_ <= 100 & purpleair_feb24_v2$pm2_5_atm_b_ <= 100 & purpleair_feb24_v2$diff < 11, (purpleair_feb24_v2$pm2_5_atm_a_ + purpleair_feb24_v2$pm2_5_atm_b_)/2,
+                                      ifelse(purpleair_feb24_v2$pm2_5_atm_a_ > 100 & purpleair_feb24_v2$pm2_5_atm_b_ > 100 & purpleair_feb24_v2$perdiff < 0.11, (purpleair_feb24_v2$pm2_5_atm_a_ + purpleair_feb24_v2$pm2_5_atm_b_)/2, NA))
+
+
+# summary(purpleair_feb24_v2$pm2_5_atm_final ) ~ 40% missing
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's
+# 0.0     5.3    35.6    41.4    53.6   494.8  502394
+
+
+
+
+
+
+
+##Maximum Standard Range : >= 1,000 ug/m3 - Set These to Missing?(https://www2.purpleair.com/products/purpleair-pa-ii)
+##Effective Range Set to 0 - 500ug/m3 (Limit to this?)
+purpleair_todate_dedup$pm2_5_atm_a_ <- ifelse(purpleair_todate_dedup$pm2_5_atm > 1000 , NA, purpleair_todate_dedup$pm2_5_atm)
+purpleair_todate_dedup$pm2_5_atm_b_ <- ifelse(purpleair_todate_dedup$pm2_5_atm_b > 1000 , NA, purpleair_todate_dedup$pm2_5_atm_b)
+
+
+
+## Compute difference and percent difference
+purpleair_todate_dedup$perdiff <- abs(purpleair_todate_dedup$pm2_5_atm_a_ - purpleair_todate_dedup$pm2_5_atm_b_)/purpleair_todate_dedup$pm2_5_atm_a_ 
+purpleair_todate_dedup$diff <- abs(purpleair_todate_dedup$pm2_5_atm_a_ - purpleair_todate_dedup$pm2_5_atm_b_)
+
+
+
+## Version 2 - Final PM2.5 based on average between the two sensors if below 20% if over 100ug/m3
+purpleair_todate_dedup$pm2_5_atm_final <- ifelse(purpleair_todate_dedup$pm2_5_atm_a_ <= 100 & purpleair_todate_dedup$pm2_5_atm_b_ <= 100 & purpleair_todate_dedup$diff < 11, (purpleair_todate_dedup$pm2_5_atm_a_ + purpleair_todate_dedup$pm2_5_atm_b_)/2,ifelse(purpleair_todate_dedup$pm2_5_atm_a_ > 100 & purpleair_todate_dedup$pm2_5_atm_b_ > 100 & purpleair_todate_dedup$perdiff < 0.21, (purpleair_todate_dedup$pm2_5_atm_a_ + purpleair_todate_dedup$pm2_5_atm_b_)/2, NA))
+
+
+
+# summary(purpleair_feb24_v2$pm2_5_atm_final ) 
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's
+# 0.0     5.3    35.6    41.4    53.6   494.8  502394
+
+
+
+##Plot of PM2.5 by community
+ggboxplot(purpleair_feb24_v2, "vname","pm2_5_atm_final")+rotate_x_text()
+
+
+## Additional QC Methods
+# Step 1
+# take mean below 20% (flag variable)
+# look at 10% between the sensors - to flag (count of number above 10% within 24-hour period) 
+# generate plots comparing sensors A & B (correlation between the two) & timeseries with both sensors** (to determine which sensor if one is clearly off)
+
+
+# Step 2
+# flag first, +/-20-30% & compare with nearest purpleair for same time period (daily averaged)
+# scatter plot between individual monitors and fleet average
+# for pm2_5_atm_final daily average, correlation between communities (fleet average)
+
+
+
+purpleair_todate_dedup_no1923 <- subset(purpleair_todate_dedup, purpleair_todate_dedup$timestamp >= "2001-01-01 00:00:00")
+
+purpleair_todate_dedup_no1923_dedup <- purpleair_todate_dedup_no1923[!duplicated(purpleair_todate_dedup_no1923),]
+
+purpleair_todate_dedup_no1923_dedup$community_id[purpleair_todate_dedup_no1923_dedup$community_id == "kadeslo"] = "kadelso"
+purpleair_todate_dedup_no1923_dedup$community_id[purpleair_todate_dedup_no1923_dedup$community_id == "suronause"] = "suronuase"
+purpleair_todate_dedup_no1923_list <- split(purpleair_todate_dedup_no1923_dedup, f = purpleair_todate_dedup_no1923_dedup$community_id) #every 2 minutes
+
+#Overall completeness
+#Completeness by year
+
+complete <- list()
+completeness <- data.frame(community = character(), completeness = numeric())
+
+ for(i in 1:length(purpleair_todate_dedup_no1923_list)){
+   
+   purpleair_todate_dedup_no1923_list[[i]] <- purpleair_todate_dedup_no1923_list[[i]] %>% arrange(timestamp)
+   purpleair_todate_dedup_no1923_list[[i]]$elapsedtime <- difftime(purpleair_todate_dedup_no1923_list[[i]]$timestamp, lag(purpleair_todate_dedup_no1923_list[[i]]$timestamp), units = "mins")
+   # print(paste0("Community", names(purpleair_todate_dedup_no1923_list)[i]))
+   # print(unique(purpleair_todate_dedup_no1923_list[[i]]$elapsedtime))
+  n <- nrow(purpleair_todate_dedup_no1923_list[[i]]) #Number of rows (minutes) with complete PM2.5 Data
+  expected <- as.numeric(difftime(max(purpleair_todate_dedup_no1923_list[[i]]$timestamp), min(purpleair_todate_dedup_no1923_list[[i]]$timestamp),units = 'mins'))/2 #Logging frequency is every 2 minutes  
+  complete[[i]] <- (n/expected) #Change to percentage
+ 
+  complete_df <- data.frame(community = names(purpleair_todate_dedup_no1923_list)[i], completeness = complete[[i]])
+  completeness <- rbind(completeness, complete_df)
+  
+ }
+
+completeness$completeness[completeness$completeness > 1] = 1
+completeness <- completeness %>% dplyr::mutate(community = fct_reorder(community, desc(completeness)))
+ggplot(completeness, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+theme_bw(base_size = 18)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")+ggtitle("Overall")
+
+
+
+
+
+purpleair_todate_dedup_no1923_dedup$community_id[purpleair_todate_dedup_no1923_dedup$community_id == "kadeslo"] = "kadelso"
+purpleair_todate_dedup_no1923_dedup$community_id[purpleair_todate_dedup_no1923_dedup$community_id == "suronause"] = "suronuase"
+purpleair_todate_dedup_no1923_list_yr <- split(purpleair_todate_dedup_no1923_dedup, f = year(purpleair_todate_dedup_no1923_dedup$timestamp)) #every 2 minutes
+completeness_yr <- data.frame(community = character(), year = numeric() ,completeness = numeric())
+# complete_yr <- list()
+
+
+
+ for(i in 1:length(purpleair_todate_dedup_no1923_list_yr)){
+   
+   for(j in 1:length(unique(purpleair_todate_dedup_no1923_list_yr[[i]]$community_id))){
+     
+    current_community <- purpleair_todate_dedup_no1923_list_yr[[i]][purpleair_todate_dedup_no1923_list_yr[[i]]$community_id == unique(purpleair_todate_dedup_no1923_list_yr[[i]]$community_id)[j],]
+    
+    if(nrow(current_community) > 0){
+   current_community  <- current_community  %>% arrange(timestamp)
+   current_community$elapsedtime <- difftime(current_community$timestamp, lag(current_community$timestamp), units = "mins")
+   # print(paste0("Community", names(purpleair_todate_dedup_no1923_list)[i]))
+   # print(unique(purpleair_todate_dedup_no1923_list[[i]]$elapsedtime))
+    n <- nrow(current_community) #Number of rows (minutes) with complete PM2.5 Data
+   expected <- as.numeric(difftime(max(current_community$timestamp), min(current_community$timestamp),units = 'mins'))/2 #Logging frequency is every 2 minutes  
+   complete_yr <- (n/expected)#Change to percentage
+ 
+  complete_df <- data.frame(community = unique(current_community$community_id), year = names(purpleair_todate_dedup_no1923_list_yr)[i], completeness = complete_yr)
+  completeness_yr <- rbind(completeness_yr, complete_df)
+  
+  }else{
+    
+  complete_df <- data.frame(community = unique(purpleair_todate_dedup_no1923_list_yr[[i]]$community_id[j]), year = names(purpleair_todate_dedup_no1923_list_yr)[i], completeness = NA)
+  completeness_yr <- rbind(completeness_yr, complete_df)
+
+    
+  }
+  
+ }}
+
+completeness_yr$completeness[completeness_yr$completeness > 1] = 1
+
+ggplot(completeness_yr, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+facet_wrap(~year)+theme_bw(base_size = 12)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")
+
+completeness_21 <- completeness_yr[completeness_yr$year == "2021",] %>% dplyr::mutate(community = fct_reorder(community, desc(completeness)))
+completeness_22 <- completeness_yr[completeness_yr$year == "2022",] %>% dplyr::mutate(community = fct_reorder(community, desc(completeness)))
+completeness_23 <- completeness_yr[completeness_yr$year == "2023",] %>% dplyr::mutate(community = fct_reorder(community, desc(completeness)))
+completeness_24 <- completeness_yr[completeness_yr$year == "2024",] %>% dplyr::mutate(community = fct_reorder(community, desc(completeness)))
+
+
+ggplot(completeness_21, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+theme_bw(base_size = 16)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")+ggtitle("Year 2021")
+
+ggplot(completeness_22, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+theme_bw(base_size = 16)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")+ggtitle("Year 2022")
+
+ggplot(completeness_23, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+theme_bw(base_size = 16)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")+ggtitle("Year 2023")
+
+ggplot(completeness_24, aes(x = community, y = completeness))+ scale_y_continuous(labels = scales::percent)+geom_bar(stat='identity', fill = "#0072B2",color = "grey30")+theme_bw(base_size = 16)+rotate_x_text()+ylab("Data Completeness,%")+xlab("PurpleAir Community Monitor")+ggtitle("Year 2024")
+
+
+purpleair_todate_dedup_no1923$temp_C <- (purpleair_todate_dedup_no1923$tempf_updated - 32) * (5/9) 
+
+
+
+purpleair_todate_dedup_no1923_final <- purpleair_todate_dedup_no1923[,c("community_id","timestamp","pm2_5_atm_final","temp_C","current_humidity")]
+
+purpleair_todate_dedup_no1923_final_complete <- purpleair_todate_dedup_no1923_final[complete.cases(purpleair_todate_dedup_no1923_final[,c(1:3)]),]
+
+# write_rds(purpleair_todate_dedup_no1923_final_complete, "C:/Users/tsotek01/OneDrive/purpleair_final_0521_1124.rds")
+names(purpleair_todate_dedup_no1923_final_complete)[3] = "pm2_5_atm"
+names(purpleair_todate_dedup_no1923_final_complete)[1] = "nodeId"
+names(purpleair_todate_dedup_no1923_final_complete)[4] = "current_temp_f"
+purpleair_todate_dedup_no1923_final_complete$current_temp_f <- (purpleair_todate_dedup_no1923_final_complete$current_temp_f* (9/5)) + 32 
+write.csv(purpleair_todate_dedup_no1923_final_complete, "C:/Users/tsotek01/OneDrive/purpleair_final_0521_1124.csv")
+
+
+for(i in unique(purpleair_todate_dedup_no1923_final$community_id)){
+  
+  print(ggplot(purpleair_todate_dedup_no1923_final[purpleair_todate_dedup_no1923_final$community_id == i,], aes(x = timestamp, y = pm2_5_atm_final))+geom_line()+theme_bw()+ggtitle(paste0("Community: ", i)))
+}
+
+
+#find nearest neighbor*
+
+purpleair_xy <- read.csv("Z:/CLF_Ghana/Community_Level_Exposures/Community_PM/PurpleAir/Device Location/purpleair_locations.csv")
+
+
+
+
+purpleair_harmattan_calibration <- read.csv("C:/Users/tsotek01/Downloads/corrected_techiman_pa_data_032724_no_harmattan_calibration (1).csv")
+purpleair_harmattan_calibration$timestamp <- as.POSIXct(purpleair_harmattan_calibration$time, format = "%Y-%m-%d %H:%M:%S")
+ 
+ 
+for(i in unique(purpleair_harmattan_calibration$nodeId)){
+ 
+  print(ggplot(purpleair_harmattan_calibration[purpleair_harmattan_calibration$nodeId == i,], aes(x = timestamp))+geom_line(aes(y = pm2_5_atm))+geom_line(aes(y = predicted_pm2.5), color= "red")+theme_bw()+ggtitle(paste0("Community: ", i)))
+}
+
+
+
+
+
+```
+
+
+

@@ -1,0 +1,151 @@
+---
+title: "PurpleAir Updates"
+author: "Kholiswa Tsotetsi"
+output:
+  html_document:
+    df_print: paged
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(dplyr)
+library(xts)
+library(dygraphs)
+library(readr) #for read_csv function
+library(ggpubr)
+library(readr)
+library(magrittr)
+library(purrr)
+library(stringr)
+library(htmltools)
+
+```
+
+
+```{r, echo = FALSE, warning = FALSE , message = FALSE}
+
+#Load in processed file
+
+
+purpleair_oct24_v2 <-  readRDS("C:/Users/tsotek01/OneDrive/purpleair_feb25.rds")
+
+
+
+
+
+```
+
+
+
+
+
+```{r, fig.width=6, echo=FALSE,results ="asis", warning = FALSE , message = FALSE}
+
+sensors <- list()
+
+for (i in unique(purpleair_oct24_v2$vname)){
+  cat(paste0("## Community: ",i," \n"))
+
+  # tryCatch({
+     ##Correlation Between Sensors A & B
+
+ print(ggscatter(purpleair_oct24_v2[purpleair_oct24_v2$vname == i,], x = "pm2_5_atm", y ="pm2_5_atm_b", add = "reg.line",
+ add.params = list(color = "blue", fill = "lightgray"),
+ conf.int = TRUE,
+ cor.coef = TRUE,
+ cor.coeff.args = list(method = "pearson", label.x = min(purpleair_oct24_v2$pm2_5_atm[purpleair_oct24_v2$vname == i]),label.y = max(purpleair_oct24_v2$pm2_5_atm_b[purpleair_oct24_v2$vname == i]), label.sep = "\n"))+
+stat_regline_equation(label.x = min(purpleair_oct24_v2$purpleair_oct24_v2$pm2_5_atm[purpleair_oct24_v2$vname == i]), label.y = max(purpleair_oct24_v2$pm2_5_atm_b[purpleair_oct24_v2$vname == i])-3)+ggtitle(paste0("Community: ", i))+xlab("Sensor A PM2.5 Conc.")+ylab("Sensor B PM2.5 Conc."))
+
+cat("\n")
+cat("\n")
+cat("\n")
+
+# 
+# 
+#   atma <- xts(x= purpleair_oct24_v2$pm2_5_atm[purpleair_oct24_v2$vname == i], order.by = purpleair_oct24_v2$timestamp[purpleair_oct24_v2$vname == i])
+#   atmb <- xts(x = purpleair_oct24_v2$pm2_5_atm_b[purpleair_oct24_v2$vname == i], order.by = purpleair_oct24_v2$timestamp[purpleair_oct24_v2$vname == i])
+# 
+#   
+#    both_sensors  <- cbind(atma, atmb)
+# 
+#    print(dygraph(both_sensors, xlab="Time", y = "PM2.5 Concenetration", main = paste0("Community: ", i))%>%dyHighlight(highlightCircleSize = 1.5,
+#               highlightSeriesBackgroundAlpha = 0.1,
+#                hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE))
+#    
+    
+    
+
+print(ggplot(purpleair_oct24_v2[purpleair_oct24_v2$vname == i,], aes(x = timestamp))+geom_line(aes(y = pm2_5_atm), color = "blue")+ geom_line(aes(y = pm2_5_atm_b), color= "red")+theme(title = paste0("Community: ", i)) + theme_bw()+xlab("Date")+ylab("PM2.5 Concentration"))
+
+cat("\n")
+cat("\n")
+cat("\n")
+
+
+print(ggplot(purpleair_oct24_v2[purpleair_oct24_v2$vname == i,], aes(x = timestamp))+geom_line(aes(y = tempc), color = "blue")+theme(title = paste0("Community: ", i)) + theme_bw()+xlab("Date")+ylab("Temperature, in Celsius"))
+
+cat("\n")
+cat("\n")
+cat("\n")
+
+print(ggplot(purpleair_oct24_v2[purpleair_oct24_v2$vname == i,], aes(x = timestamp))+geom_line(aes(y = current_humidity), color = "blue")+theme(title = paste0("Community: ", i)) + theme_bw()+xlab("Date")+ylab("Relative Humidity, %"))
+
+ 
+
+  # dygraph(both_sensors , xlab="Time", y = "PM2.5 Concenetration", main = paste0("Community: ", i))%>%dyHighlight(highlightCircleSize = 1.5,
+  #            highlightSeriesBackgroundAlpha = 0.1,
+  #             hideOnMouseOut = FALSE)%>%dyRangeSelector()%>% dyOptions(connectSeparatedPoints = TRUE)
+
+ #  }, error = function(e){
+ # 
+ # print(ggscatter(purpleair_oct24_v2[purpleair_oct24_v2$vname == i,], x = "pm2_5_atm", y ="pm2_5_atm_b", add = "reg.line",
+ #   add.params = list(color = "blue", fill = "lightgray"),
+ #   conf.int = TRUE,
+ #   cor.coef = TRUE,
+ #   cor.coeff.args = list(method = "pearson", label.x = min(purpleair_oct24_v2$pm2_5_atm[purpleair_oct24_v2$vname == i]),label.y = median(purpleair_oct24_v2$pm2_5_atm_b[purpleair_oct24_v2$vname == i]), label.sep = "\n"))+
+ #  stat_regline_equation(label.x = min(purpleair_oct24_v2$pm2_5_atm[purpleair_oct24_v2$vname == i]), label.y = median(purpleair_oct24_v2$pm2_5_atm_b[purpleair_oct24_v2$vname == i]))+ggtitle(paste0("Community: ", i)))
+ # 
+ #  })
+ #  
+cat("\n")  
+cat("\n")  
+cat("***\n")  
+  
+}
+
+ # htmltools::tagList(sensors)    
+
+
+ 
+
+
+
+# Then the issue of assessing the dual sensors:  This is what I remember 
+# 1) looking at time series of both sensor A and Sensor be to see if they look good (easy to script time series but hard for script evaluation- I wonder if machine learning could learn to say good vs bad?) 
+# 2)  comparing sensor A to sensor B and if they agree (slope of A vs B = 1.0 ± 0.2; and intercept is close to zero ± 15) this part can be scripted for both good or not as well as plotted to make sure not driven by a few outliers (unless there is a simple statistic that can tell us if slope is driven by outliers?) and 
+# if good then do we pick one sensor as the official sensor or do we average (personally I would average but I am not a biostatistician).
+# 
+# However, if A ≠ B (outside acceptable range above for slope 0 then we have to do additional steps for determining which sensor is bad.  
+# 1) if one all zeros or flatlined and the other has typical diurnal variations then obvious and can be scripted to check (can be part of # 1 above)
+# 2) if both have variations but one is noisier than typical then that is also pretty obviously the bad sensor (could we compare standard deviation or both A and B and if RSD > some percentage (20%)
+# 3) if slope in 2 above is outside of acceptable range but both sets look ok, then we could compare A and B to other good sensors in nearest 2 communities to evaluate which is good and which is bad
+# 
+# 
+# 
+# Correlation between sensors and pull out slope, intercept and R2
+# 
+# If outside range, if one is all zeros, use other sensor as final value
+# If above 3,000 ug/m3 (error message), then select other value**
+# if both vary but one is noisier, use relative standard deviation between the two 
+# Compare a & B to other sensors in nearest 2 communities to help determine which is good/bad
+# 
+
+
+```
+

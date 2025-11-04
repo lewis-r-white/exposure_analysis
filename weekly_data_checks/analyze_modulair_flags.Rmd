@@ -1,0 +1,400 @@
+---
+title: "Modulair Flag Analysis"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    self_contained: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load Dependencies 
+library(gtsummary)
+library(dplyr)
+library(gt)
+library(ggplot2)
+library(xts)
+library(dygraphs)
+library(plotly)
+library(DT)
+library(data.table)
+library(tidyverse)
+library(htmltools)
+
+```
+
+```{r}
+base_dir <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/modulair_check_outputs"
+
+# Pull YYYY-MM-DD from a filename
+extract_report_date <- function(path) {
+  ymd(stringr::str_extract(basename(path), "\\d{4}-\\d{2}-\\d{2}"))
+}
+
+# Generic reader for a set of dated CSVs
+read_tagged_csvs <- function(dir, prefix) {
+  files <- list.files(
+    dir,
+    pattern = paste0("^", prefix, "_\\d{4}-\\d{2}-\\d{2}\\.csv$"),
+    full.names = TRUE
+  )
+  if (!length(files)) stop("No files found for prefix: ", prefix)
+
+  purrr::map_dfr(files, function(f) {
+    readr::read_csv(f, show_col_types = FALSE) %>%
+      mutate(
+        report_date = extract_report_date(f),
+        source_file = basename(f)
+      )
+  })
+}
+
+# 1) All "modulair_flag_percent_YYYY-MM-DD.csv" files
+flag_pct_all <- read_tagged_csvs(base_dir, "modulair_flag_percent") %>%
+  select(monitor, report_date, everything())
+
+# 2) All "modulair_latestflag_YYYY-MM-DD.csv" files
+latest_flag_all <- read_tagged_csvs(base_dir, "modulair_latestflag")%>%
+  select(Monitor, report_date, everything())
+
+```
+
+## flag percent
+
+### neph/opc
+
+```{r}
+# --- params you can tweak ---
+issue_threshold  <- 25      # %
+window_weeks     <- 8       # last N report dates
+persistent_weeks <- 3
+
+# --- helpers ---
+norm_sn <- function(x) gsub("_", "-", toupper(trimws(x)))
+
+# Ensure types
+flag_pct_all <- flag_pct_all %>%
+  mutate(
+    monitor = norm_sn(monitor),
+    report_date = as.Date(report_date)
+  )
+
+
+# --- define the lookback window as last N distinct report dates across the dataset ---
+dates_window <- flag_pct_all %>%
+  distinct(report_date) %>%
+  arrange(desc(report_date)) %>%
+  slice_head(n = window_weeks) %>%
+  pull(report_date)
+
+# --- flag issue weeks (OPC or NEPH >= threshold) and summarise per monitor ---
+issue_class <- flag_pct_all %>%
+  filter(report_date %in% dates_window) %>%
+  mutate(
+    opc_issue  = coalesce(count_opc_per,  0) >= issue_threshold,
+    neph_issue = coalesce(count_neph_per, 0) >= issue_threshold,
+    any_issue  = opc_issue | neph_issue
+  ) %>%
+  group_by(monitor) %>%
+  summarise(
+    weeks_in_window   = n_distinct(report_date),
+    weeks_opc_issue   = sum(opc_issue,  na.rm = TRUE),
+    weeks_neph_issue  = sum(neph_issue, na.rm = TRUE),
+    weeks_any_issue   = sum(any_issue,  na.rm = TRUE),
+    last_issue_date   = if (any(any_issue)) max(report_date[any_issue], na.rm = TRUE) else as.Date(NA),
+    status_opc        = case_when(weeks_opc_issue  >= persistent_weeks ~ "Persistent issues",
+                                  weeks_opc_issue  >= 1               ~ "Experienced issues",
+                                  TRUE                                 ~ "No issues"),
+    status_neph       = case_when(weeks_neph_issue >= persistent_weeks ~ "Persistent issues",
+                                  weeks_neph_issue >= 1               ~ "Experienced issues",
+                                  TRUE                                 ~ "No issues"),
+    status_opc_neph   = case_when(weeks_any_issue  >= persistent_weeks ~ "Persistent issues",
+                                  weeks_any_issue  >= 1               ~ "Experienced issues",
+                                  TRUE                                 ~ "No issues"),
+    .groups = "drop"
+  )
+
+write_csv(issue_class, "/Users/lewiswhite/Downloads/flags.csv")
+issue_class
+```
+
+```{r}
+library(forcats)
+
+# --- choose which column to use ---
+neph_col <- if ("count_neph_per" %in% names(flag_pct_all)) "count_neph_per" else "count_opc_per"
+
+# window to show (reuse your dates_window if you already built it)
+if (!exists("dates_window")) {
+  dates_window <- flag_pct_all %>%
+    distinct(report_date) %>% arrange(desc(report_date)) %>%
+    slice_head(n = 8) %>% pull(report_date)
+}
+
+# make a complete grid so we can see "no report" vs 0%
+grid <- expand_grid(
+  monitor     = sort(unique(flag_pct_all$monitor)),
+  report_date = sort(dates_window)
+)
+
+# join your data & keep a has_report flag
+issue_timeline <- flag_pct_all %>%
+  filter(report_date %in% dates_window) %>%
+  transmute(
+    monitor, report_date,
+    neph_pct = .data[[neph_col]]
+  )
+
+plot_df <- grid %>%
+  left_join(issue_timeline, by = c("monitor","report_date")) %>%
+  mutate(
+    has_report = !is.na(neph_pct),
+    # clamp to 0–100 just in case
+    neph_pct = pmin(pmax(neph_pct, 0), 100)
+  )
+
+# order by worst average in window (most problematic at top)
+ord <- plot_df %>%
+  group_by(monitor) %>%
+  summarise(worst = mean(neph_pct, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(worst)) %>% pull(monitor)
+
+ggplot(plot_df, aes(report_date, monitor)) +
+  # tile with fill = percent, alpha dims tiles with no report
+  geom_tile(aes(fill = neph_pct, alpha = has_report), colour = NA) +
+  # optional: dot overlay where ≥ 25% to highlight threshold breaches
+  geom_point(
+    data = ~ filter(.x, has_report & neph_pct >= 25),
+    aes(report_date, monitor),
+    shape = 21, stroke = 0.2, size = 1.8, fill = "black", colour = "black"
+  ) +
+  # gradient with a "knot" at 25% so that threshold pops
+  scale_fill_gradientn(
+    colors  = c("#f7fbff", "#6baed6", "#08306b"),
+    values  = scales::rescale(c(0, 25, 100)),
+    limits  = c(0, 100),
+    na.value = "coral",
+    name    = "NEPH %"
+  ) +
+  scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 1), guide = "none") +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d", expand = c(0,0)) +
+  labs(
+    title = "NEPH Flag Percent by Monitor (last 8 reports)",
+    subtitle = "Dot marks weeks ≥ 25%",
+    x = "Report week", y = "Monitor"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+```
+
+
+### SD card
+
+
+```{r}
+# --- params you can tweak ---
+issue_threshold  <- 25      # %
+window_weeks     <- 8       # last N report dates
+persistent_weeks <- 3
+
+# --- helpers ---
+norm_sn <- function(x) gsub("_", "-", toupper(trimws(x)))
+
+# Ensure types
+flag_pct_all <- flag_pct_all %>%
+  mutate(
+    monitor = norm_sn(monitor),
+    report_date = as.Date(report_date)
+  )
+
+
+# --- define the lookback window as last N distinct report dates across the dataset ---
+dates_window <- flag_pct_all %>%
+  distinct(report_date) %>%
+  arrange(desc(report_date)) %>%
+  slice_head(n = window_weeks) %>%
+  pull(report_date)
+
+# --- flag issue weeks (OPC or NEPH >= threshold) and summarise per monitor ---
+issue_class <- flag_pct_all %>%
+  filter(report_date %in% dates_window) %>%
+  mutate(
+    sd_issue  = coalesce(count_sd_per,  0) >= issue_threshold
+  ) %>%
+  group_by(monitor) %>%
+  summarise(
+    weeks_in_window   = n_distinct(report_date),
+    weeks_sd_issue   = sum(sd_issue,  na.rm = TRUE),
+    last_issue_date   = if (any(weeks_sd_issue)) max(report_date[weeks_sd_issue], na.rm = TRUE) else as.Date(NA),
+    status_sd        = case_when(weeks_sd_issue  >= persistent_weeks ~ "Persistent issues",
+                                  weeks_sd_issue  >= 1               ~ "Experienced issues",
+                                  TRUE                                 ~ "No issues"),
+    .groups = "drop"
+  )
+
+write_csv(issue_class, "/Users/lewiswhite/Downloads/flags.csv")
+issue_class
+```
+
+```{r}
+library(forcats)
+
+# window to show (reuse your dates_window if you already built it)
+if (!exists("dates_window")) {
+  dates_window <- flag_pct_all %>%
+    distinct(report_date) %>% arrange(desc(report_date)) %>%
+    slice_head(n = 8) %>% pull(report_date)
+}
+
+# make a complete grid so we can see "no report" vs 0%
+grid <- expand_grid(
+  monitor     = sort(unique(flag_pct_all$monitor)),
+  report_date = sort(dates_window)
+)
+
+# join your data & keep a has_report flag
+issue_timeline <- flag_pct_all %>%
+  filter(report_date %in% dates_window) %>%
+  transmute(
+    monitor, report_date,
+    sd_pct = count_sd_per
+  )
+
+plot_df <- grid %>%
+  left_join(issue_timeline, by = c("monitor","report_date")) %>%
+  mutate(
+    has_report = !is.na(sd_pct),
+    # clamp to 0–100 just in case
+    sd_pct = pmin(pmax(sd_pct, 0), 100)
+  )
+
+# order by worst average in window (most problematic at top)
+ord <- plot_df %>%
+  group_by(monitor) %>%
+  summarise(worst = mean(sd_pct, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(worst)) %>% pull(monitor)
+
+ggplot(plot_df, aes(report_date, monitor)) +
+  # tile with fill = percent, alpha dims tiles with no report
+  geom_tile(aes(fill = sd_pct, alpha = has_report), colour = NA) +
+  # optional: dot overlay where ≥ 25% to highlight threshold breaches
+  geom_point(
+    data = ~ filter(.x, has_report & sd_pct >= 25),
+    aes(report_date, monitor),
+    shape = 21, stroke = 0.2, size = 1.8, fill = "black", colour = "black"
+  ) +
+  # gradient with a "knot" at 25% so that threshold pops
+  scale_fill_gradientn(
+    colors  = c("#f7fbff", "#6baed6", "#08306b"),
+    values  = scales::rescale(c(0, 25, 100)),
+    limits  = c(0, 100),
+    na.value = "coral",
+    name    = "NEPH %"
+  ) +
+  scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 1), guide = "none") +
+  scale_x_date(date_breaks = "1 week", date_labels = "%b %d", expand = c(0,0)) +
+  labs(
+    title = "SD Flag Percent by Monitor (last 8 reports)",
+    subtitle = "Dot marks weeks ≥ 25%",
+    x = "Report week", y = "Monitor"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+```
+
+
+## latest flag 
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+library(stringr)
+
+# ----- 1) Parser that handles JSON and inner c("...","...") strings -----
+parse_flag_field <- function(x) {
+  if (is.na(x) || !nzchar(x)) return(character())
+
+  # Try outer JSON first (e.g., '["None"]', '["c(\"FLAG_OPC\", \"FLAG_NEPH\")"]')
+  vec <- tryCatch(fromJSON(x), error = function(e) NA_character_)
+  if (all(is.na(vec))) vec <- x  # fall back to raw string if JSON failed
+  vec <- unlist(vec, use.names = FALSE)
+  vec <- vec[nzchar(vec)]
+
+  tokens <- character()
+  for (elt in vec) {
+    s <- gsub("^c\\s*\\(|\\)$", "", elt)     # strip c(...)
+    parts <- str_split(s, "\\s*,\\s*")[[1]]  # split by comma
+    parts <- gsub("\\\\", "", parts)         # drop backslashes
+    parts <- gsub('^"|"$', "", parts)        # drop quotes
+    parts <- trimws(parts)
+    tokens <- c(tokens, parts)
+  }
+  tokens <- tokens[tokens != ""]
+  tokens <- toupper(tokens)
+  tokens[tokens %in% c("NONE","NA")] <- "NONE"
+  unique(tokens)
+}
+
+# ----- 2) Clean your latest_flag_all table into tidy, usable columns -----
+flags_clean <- latest_flag_all %>%
+  rename(monitor = Monitor) %>%
+  mutate(
+    latest_flags = map(Latest_Flag_json,    parse_flag_field),
+    flags_24h    = map(Any_Flag_24hr_json,  parse_flag_field),
+    flags_7d     = map(Any_Flag_7days_json, parse_flag_field),
+
+    latest_flag  = map_chr(latest_flags, ~ dplyr::first(setdiff(.x, "NONE"), default = "NONE")),
+    any_flag_24h = map_int(flags_24h, length)  > 0,
+    any_flag_7d  = map_int(flags_7d,  length)  > 0,
+    n_flags_24h  = map_int(flags_24h, length),
+    n_flags_7d   = map_int(flags_7d,  length),
+
+    flags_24h_str = map_chr(flags_24h, ~ paste(.x, collapse = ", ")),
+    flags_7d_str  = map_chr(flags_7d,  ~ paste(.x, collapse = ", "))
+  )
+
+# ----- 3) (Optional) one-hot indicators for each flag seen in past 7 days -----
+flag_levels <- flags_clean %>%
+  unnest(flags_7d) %>%
+  distinct(flags_7d) %>%
+  pull() %>%
+  setdiff(c("", "NONE"))
+
+flags_7d_wide <- flags_clean %>%
+  select(monitor, report_date, flags_7d) %>%
+  unnest(flags_7d) %>%
+  filter(flags_7d %in% flag_levels) %>%
+  mutate(val = 1L) %>%
+  pivot_wider(names_from = flags_7d, values_from = val, values_fill = 0)
+
+# Example: join wide indicators back if you want easy filtering
+flags_ready <- flags_clean %>%
+  left_join(flags_7d_wide, by = c("monitor", "report_date"))
+
+# ----- 4) Latest snapshot per monitor (one row/device) -----
+latest_snapshot <- flags_ready %>%
+  group_by(monitor) %>%
+  filter(report_date == max(report_date, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(
+    monitor, report_date,
+    latest_flag, any_flag_24h, any_flag_7d, n_flags_24h, n_flags_7d,
+    flags_24h_str, flags_7d_str,
+    all_of(flag_levels) # one-hot columns if created
+  )
+
+# Now you can:
+# - left_join(latest_snapshot) onto your manager summary (by serial number/monitor)
+# - or plot counts/booleans quickly for a health dashboard
+
+```
+

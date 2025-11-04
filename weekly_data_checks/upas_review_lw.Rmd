@@ -72,8 +72,8 @@ for (i in seq_along(summaries)) {
     formatStyle('temp_mean', backgroundColor = styleInterval(45, c("white", "red"))) %>%
     formatStyle('rh_min', backgroundColor = styleInterval(0, c("red", "white"))) %>%
     formatStyle('rh_max', backgroundColor = styleInterval(99, c("white", "red"))) %>%
-    formatStyle('flow_max', backgroundColor = styleInterval(2.08, c("white", "red"))) %>%
-    formatStyle('flow_mean', backgroundColor = styleInterval(2.08, c("white", "red"))) %>%
+    formatStyle('flow_min', backgroundColor = styleInterval(0.9, c("red", "white"))) %>%
+    formatStyle('flow_max', backgroundColor = styleInterval(1.1, c("white", "red"))) %>%
     formatStyle('flow_mean', backgroundColor = styleInterval(0.960, c("red", "white"))) %>%
     formatStyle('compliance_hours_day_session1', backgroundColor = styleInterval(10, c("red", "white"))) %>%
     formatStyle('compliance_hours_day_session2', backgroundColor = styleInterval(10, c("red", "white"))) %>%
@@ -100,7 +100,7 @@ htmltools::tagList(tables)
 
 # Individual Time Series
 
-## PM 2.5 and Flow Rate Time Series
+## PM 2.5 Time Series
 
 ```{r, echo = FALSE, results='asis', warning = FALSE, message = FALSE, fig.keep='all'}
 
@@ -118,107 +118,377 @@ all_plots <- list()
 for (file in rds_files) {
   community_name <- gsub("list\\.upas_|\\d{8}\\.rds", "", basename(file))
   upas_list <- readRDS(file)
-
-  # Select consistent columns from each element of the list
+  
+  # Normalize: if the RDS is a single data.frame, wrap it as a 1-element list
+  if (is.data.frame(upas_list))
+    upas_list <- list(upas_list)
+  
+  # Keep only non-empty data.frames and standardize columns safely
+  keep_cols <- c(
+    "timestamp",
+    "DateTimeLocal",
+    "PM2_5MC_clean",
+    "PumpingFlowFactory_clean",
+    "PumpingFlowRate_clean",
+    "worn_flag",
+    "worn_any",
+    "movement_prop10m",
+    "moving_30s",
+    "subject_id",
+    "UPASserial"
+  )
+  
+  # Optionally, see what got dropped
+  dropped_idx <- which(!vapply(upas_list, function(x)
+    is.data.frame(x) && nrow(x) > 0, logical(1)))
+  if (length(dropped_idx)) {
+    message(
+      "Dropped ",
+      length(dropped_idx),
+      " NULL/non-data.frame/empty element(s) in ",
+      basename(file)
+    )
+  }
+  
   upas_list <- lapply(upas_list, function(df) {
-    df %>% select(timestamp, PM2_5MC_clean, PumpingFlowFactory_clean, compliance, subject_id, UPASserial)
+    if (!is.data.frame(df) || nrow(df) == 0)
+      return(NULL)
+    dplyr::select(df, any_of(keep_cols))
   })
-
+  
+  # Remove NULLs
+  upas_list <- Filter(Negate(is.null), upas_list)
+  
+  # If still nothing left, skip to next file
+  if (length(upas_list) == 0)
+    next
+  
   upas_combined <- bind_rows(upas_list) %>%
     mutate(
-      timestamp = as.POSIXct(timestamp),
-      compliance = as.numeric(as.character(compliance)),
-      PM2_5MC_clean = as.numeric(PM2_5MC_clean)
+      # unify time
+      time = dplyr::coalesce(
+        suppressWarnings(as.POSIXct(timestamp, tz = "UTC")),
+        suppressWarnings(as.POSIXct(DateTimeLocal, tz = "UTC"))
+      ),
+      PM2_5MC_clean = suppressWarnings(as.numeric(PM2_5MC_clean))
     )
 
-  participants <- unique(upas_combined$subject_id)
-  pal <- RColorBrewer::brewer.pal(min(length(participants), 8), "Set1")
+  upas_combined <- upas_combined %>%
+    mutate(pid = ifelse(!is.na(subject_id) & nzchar(subject_id),
+                        subject_id, as.character(UPASserial)))
+  
+  
+  # --- build a binary wear state: 1 = worn, 0 = not worn ---
+  if ("worn_flag" %in% names(upas_combined)) {
+    upas_combined$worn_bin <- as.integer(upas_combined$worn_flag %in% TRUE)
+  } else if ("worn_any" %in% names(upas_combined)) {
+    upas_combined$worn_bin <- as.integer(upas_combined$worn_any %in% TRUE)
+  } else if ("movement_prop10m" %in% names(upas_combined)) {
+    # keep the same threshold you use elsewhere (0.05 by default)
+    upas_combined$worn_bin <- as.integer(suppressWarnings(as.numeric(upas_combined$movement_prop10m)) >= 0.05)
+  } else if ("moving_30s" %in% names(upas_combined)) {
+    upas_combined$worn_bin <- as.integer(suppressWarnings(as.numeric(upas_combined$moving_30s)) == 1)
+  } else {
+    upas_combined$worn_bin <- NA_integer_
+  }
+
+  # clean rows we can plot
+  upas_combined <- upas_combined %>%
+    filter(is.finite(PM2_5MC_clean), !is.na(time))
+
+  participants <- unique(upas_combined$pid)
+  pal <- RColorBrewer::brewer.pal(min(max(length(participants), 3), 8), "Set1")
   if (length(participants) > 8) pal <- colorRampPalette(pal)(length(participants))
   colors <- setNames(pal, participants)
 
-  # y-axis ranges per view
-  max_nonworn <- upas_combined %>% filter(compliance == 0) %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
-  max_worn    <- upas_combined %>% filter(compliance == 1) %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
-  max_all     <- upas_combined %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
+  # y-axis ranges for the buttons
+  max_nonworn <- upas_combined %>% filter(worn_bin == 0) %>%
+    summarise(mx = suppressWarnings(max(PM2_5MC_clean, na.rm = TRUE))) %>% pull(mx)
+  max_worn    <- upas_combined %>% filter(worn_bin == 1) %>%
+    summarise(mx = suppressWarnings(max(PM2_5MC_clean, na.rm = TRUE))) %>% pull(mx)
+  max_all     <- suppressWarnings(max(upas_combined$PM2_5MC_clean, na.rm = TRUE))
 
   p <- plot_ly()
-  # Build two traces per participant: non-worn then worn (this index order matters for masks)
+
+  # two traces per participant: Not worn then Worn (order matters for the visibility masks)
   for (id in participants) {
-    d_id <- upas_combined %>% filter(subject_id == id) %>% arrange(timestamp)
+    d_id <- upas_combined %>% filter(pid == id) %>% arrange(time)
     serial <- d_id$UPASserial[which.max(!is.na(d_id$UPASserial))]
-    legend_name <- paste0(id, if (!is.na(serial)) paste0(" (", serial, ")") else "")
+    legend_name <- if (!is.na(serial)) paste0(id, " (", serial, ")") else id
 
-    d_non <- d_id %>% filter(compliance == 0)
-    d_wrn <- d_id %>% filter(compliance == 1)
+    d_non <- d_id %>% filter(worn_bin == 0)
+    d_wrn <- d_id %>% filter(worn_bin == 1)
 
-   # NOT WORN trace
-p <- p %>% add_trace(
-  data = d_non,
-  x = ~timestamp, y = ~PM2_5MC_clean,
-  type = "scatter", mode = "lines",
-  name = paste0(legend_name, " — Not worn"),
-  line = list(width = 1.2, color = colors[id]),
-  showlegend = TRUE,
-  hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
-)
+    # NOT WORN trace
+    p <- p %>% add_trace(
+      data = d_non, x = ~time, y = ~PM2_5MC_clean,
+      type = "scatter", mode = "lines",
+      name = paste0(legend_name, " — Not worn"),
+      line = list(width = 1.2, color = colors[id]),
+      showlegend = TRUE,
+      hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
+    )
 
-# WORN trace
-p <- p %>% add_trace(
-  data = d_wrn,
-  x = ~timestamp, y = ~PM2_5MC_clean,
-  type = "scatter", mode = "lines",
-  name = paste0(legend_name, " — Worn"),
-  line = list(width = 1.2, color = colors[id]),
-  showlegend = TRUE,          # separate legend row
-  hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
-)
+    # WORN trace
+    p <- p %>% add_trace(
+      data = d_wrn, x = ~time, y = ~PM2_5MC_clean,
+      type = "scatter", mode = "lines",
+      name = paste0(legend_name, " — Worn"),
+      line = list(width = 1.2, color = colors[id]),
+      showlegend = TRUE,
+      hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
+    )
   }
 
-n <- length(participants)
-visible_nonworn <- rep(list(TRUE,        "legendonly"), n)  # draw Not worn; keep Worn listed
-visible_worn    <- rep(list("legendonly", TRUE        ), n)  # draw Worn; keep Not worn listed
-visible_all     <- rep(list(TRUE,         TRUE        ), n)  # draw both
+  n <- length(participants)
+  # visibility vectors (2 traces per participant)
+  visible_nonworn <- rep(c(TRUE, "legendonly"), n)
+  visible_worn    <- rep(c("legendonly", TRUE), n)
+  visible_all     <- rep(TRUE, 2 * n)
 
-p <- p %>%
-  layout(
-    legend = list(
-      title = list(text = "<b>Participant — state</b>"),
-      itemclick = "toggle",            # single click toggles that one trace
-      itemdoubleclick = "toggleothers",# double click isolates that one trace
-      traceorder = "grouped"           # keeps Not worn/Worn entries adjacent
-    ),
-    uirevision = paste0("pm-", community_name)
-  ) %>%
-  layout(
-    updatemenus = list(list(
-      type = "buttons", direction = "left", x = 0, y = 1.12,
-      buttons = list(
-        list(label="Not Worn", method="update",
-             args=list(list(visible = visible_nonworn),
-                       list(yaxis = list(range = c(0, ifelse(is.finite(max_nonworn), max_nonworn, 1)),
-                                         autorange = FALSE)))),
-        list(label="Worn", method="update",
-             args=list(list(visible = visible_worn),
-                       list(yaxis = list(range = c(0, ifelse(is.finite(max_worn), max_worn, 1)),
-                                         autorange = FALSE)))),
-        list(label="All", method="update",
-             args=list(list(visible = visible_all),
-                       list(yaxis = list(range = c(0, ifelse(is.finite(max_all), max_all, 1)),
-                                         autorange = FALSE))))
-      )
-    )))
-
+  p <- p %>%
+    layout(
+      legend = list(
+        title = list(text = "<b>Participant — state</b>"),
+        itemclick = "toggle",
+        itemdoubleclick = "toggleothers",
+        traceorder = "grouped"
+      ),
+      uirevision = paste0("pm-", community_name)
+    ) %>%
+    layout(
+      updatemenus = list(list(
+        type = "buttons", direction = "left", x = 0, y = 1.12,
+        buttons = list(
+          list(label = "Not Worn", method = "update",
+               args = list(
+                 list(visible = visible_nonworn),
+                 list(yaxis = list(range = c(0, ifelse(is.finite(max_nonworn), max_nonworn, 1)),
+                                   autorange = FALSE))
+               )),
+          list(label = "Worn", method = "update",
+               args = list(
+                 list(visible = visible_worn),
+                 list(yaxis = list(range = c(0, ifelse(is.finite(max_worn), max_worn, 1)),
+                                   autorange = FALSE))
+               )),
+          list(label = "All", method = "update",
+               args = list(
+                 list(visible = visible_all),
+                 list(yaxis = list(range = c(0, ifelse(is.finite(max_all), max_all, 1)),
+                                   autorange = FALSE))
+               ))
+        )
+      )))
   
-  # Add a header + the plot for this community
   all_plots[[length(all_plots) + 1]] <- tags$h3(paste("Community:", community_name, "— PM2.5"))
   all_plots[[length(all_plots) + 1]] <- p
   all_plots[[length(all_plots) + 1]] <- tags$hr()
 }
 
-# Final display
+# Render all community sections
 htmltools::tagList(all_plots)
+  
+  
+  
+  
+  
+#   
+#   participants <- unique(upas_combined$subject_id)
+#   pal <- RColorBrewer::brewer.pal(min(length(participants), 8), "Set1")
+#   if (length(participants) > 8) pal <- colorRampPalette(pal)(length(participants))
+#   colors <- setNames(pal, participants)
+# 
+#   # y-axis ranges per view
+#   max_nonworn <- upas_combined %>% filter(compliance == 0) %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
+#   max_worn    <- upas_combined %>% filter(compliance == 1) %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
+#   max_all     <- upas_combined %>% pull(PM2_5MC_clean) %>% max(na.rm = TRUE)
+# 
+#   p <- plot_ly()
+#   # Build two traces per participant: non-worn then worn (this index order matters for masks)
+#   for (id in participants) {
+#     d_id <- upas_combined %>% filter(subject_id == id) %>% arrange(timestamp)
+#     serial <- d_id$UPASserial[which.max(!is.na(d_id$UPASserial))]
+#     legend_name <- paste0(id, if (!is.na(serial)) paste0(" (", serial, ")") else "")
+# 
+#     d_non <- d_id %>% filter(compliance == 0)
+#     d_wrn <- d_id %>% filter(compliance == 1)
+# 
+#    # NOT WORN trace
+# p <- p %>% add_trace(
+#   data = d_non,
+#   x = ~timestamp, y = ~PM2_5MC_clean,
+#   type = "scatter", mode = "lines",
+#   name = paste0(legend_name, " — Not worn"),
+#   line = list(width = 1.2, color = colors[id]),
+#   showlegend = TRUE,
+#   hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
+# )
+# 
+# # WORN trace
+# p <- p %>% add_trace(
+#   data = d_wrn,
+#   x = ~timestamp, y = ~PM2_5MC_clean,
+#   type = "scatter", mode = "lines",
+#   name = paste0(legend_name, " — Worn"),
+#   line = list(width = 1.2, color = colors[id]),
+#   showlegend = TRUE,          # separate legend row
+#   hovertemplate = "Participant: %{fullData.name}<br>Time: %{x}<br>PM2.5: %{y:.1f} µg/m³<extra></extra>"
+# )
+#   }
+# 
+# n <- length(participants)
+# visible_nonworn <- rep(list(TRUE,        "legendonly"), n)  # draw Not worn; keep Worn listed
+# visible_worn    <- rep(list("legendonly", TRUE        ), n)  # draw Worn; keep Not worn listed
+# visible_all     <- rep(list(TRUE,         TRUE        ), n)  # draw both
+# 
+# p <- p %>%
+#   layout(
+#     legend = list(
+#       title = list(text = "<b>Participant — state</b>"),
+#       itemclick = "toggle",            # single click toggles that one trace
+#       itemdoubleclick = "toggleothers",# double click isolates that one trace
+#       traceorder = "grouped"           # keeps Not worn/Worn entries adjacent
+#     ),
+#     uirevision = paste0("pm-", community_name)
+#   ) %>%
+#   layout(
+#     updatemenus = list(list(
+#       type = "buttons", direction = "left", x = 0, y = 1.12,
+#       buttons = list(
+#         list(label="Not Worn", method="update",
+#              args=list(list(visible = visible_nonworn),
+#                        list(yaxis = list(range = c(0, ifelse(is.finite(max_nonworn), max_nonworn, 1)),
+#                                          autorange = FALSE)))),
+#         list(label="Worn", method="update",
+#              args=list(list(visible = visible_worn),
+#                        list(yaxis = list(range = c(0, ifelse(is.finite(max_worn), max_worn, 1)),
+#                                          autorange = FALSE)))),
+#         list(label="All", method="update",
+#              args=list(list(visible = visible_all),
+#                        list(yaxis = list(range = c(0, ifelse(is.finite(max_all), max_all, 1)),
+#                                          autorange = FALSE))))
+#       )
+#     )))
+# 
+#   
+#   # Add a header + the plot for this community
+#   all_plots[[length(all_plots) + 1]] <- tags$h3(paste("Community:", community_name, "— PM2.5"))
+#   all_plots[[length(all_plots) + 1]] <- p
+#   all_plots[[length(all_plots) + 1]] <- tags$hr()
+# }
+# 
+# # Final display
+# htmltools::tagList(all_plots)
+
+```
 
 
+### Flow Rate
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# ---- FAST FLOW EPISODE QC (draw only off-target segments) ----
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+# ---- parameters ----
+target_flow <- 1.00
+soft_lo <- 0.95 * target_flow
+hard_lo <- 0.90 * target_flow
+soft_hi <- 1.05 * target_flow
+hard_hi <- 1.10 * target_flow
+agg_step <- "5 min"   # try "10 min" to speed up more
+
+# helper: numeric column or NA vector (avoids errors when col is missing)
+get_num <- function(d, col) {
+  if (col %in% names(d)) suppressWarnings(as.numeric(d[[col]])) else rep(NA_real_, nrow(d))
+}
+
+# Build a minimal flow table from one .rds file
+make_flow_core <- function(rds_file) {
+  lst <- readRDS(rds_file)
+  lst <- lapply(lst, \(df) dplyr::select(
+    df, dplyr::any_of(c(
+      "timestamp","DateTimeLocal","seg_sec",
+      "PumpingFlowFactory_clean","PumpingFlowRate_clean",
+      "PumpingFlowFactory","PumpingFlowRate",
+      "subject_id","UPASserial"
+    ))
+  ))
+  d <- bind_rows(lst)
+  n <- nrow(d)
+
+  tibble(
+    pid  = dplyr::coalesce(as.character(d$subject_id), as.character(d$UPASserial)),
+    time = dplyr::coalesce(
+      suppressWarnings(as.POSIXct(d$timestamp,    tz = "UTC")),
+      suppressWarnings(as.POSIXct(d$DateTimeLocal, tz = "UTC"))
+    ),
+    seg  = if ("seg_sec" %in% names(d)) suppressWarnings(as.numeric(d$seg_sec)) else rep(30, n),
+    flow = dplyr::coalesce(
+      get_num(d, "PumpingFlowFactory_clean"),
+      get_num(d, "PumpingFlowRate_clean"),
+      get_num(d, "PumpingFlowFactory"),
+      get_num(d, "PumpingFlowRate")
+    )
+  ) |>
+    filter(!is.na(time), is.finite(flow), !is.na(pid))
+}
+
+# One static plot for a single participant
+plot_flow_single <- function(core_df, pid, community) {
+  d <- core_df |> filter(pid == !!pid)
+  if (!nrow(d)) return(NULL)
+
+  d5 <- d |>
+    mutate(t_bin = floor_date(time, agg_step)) |>
+    group_by(t_bin) |>
+    summarise(flow = weighted.mean(flow, seg, na.rm = TRUE), .groups = "drop")
+
+  if (!nrow(d5)) return(NULL)
+
+  d_soft <- d5 |> filter((flow < soft_lo & flow >= hard_lo) | (flow > soft_hi & flow <= hard_hi))
+  d_hard <- d5 |> filter( flow < hard_lo | flow > hard_hi)
+
+  ggplot(d5, aes(t_bin, flow)) +
+    geom_line(color = "grey50", linewidth = 0.4, na.rm = TRUE) +
+    geom_point(data = d_soft, aes(t_bin, flow), size = 0.7, color = "#fb9a06", na.rm = TRUE) +
+    geom_point(data = d_hard, aes(t_bin, flow), size = 0.9, color = "#d73027", na.rm = TRUE) +
+    geom_hline(yintercept = target_flow, linetype = "solid", linewidth = 0.4, alpha = 0.6) +
+    geom_hline(yintercept = c(soft_lo, soft_hi), linetype = "dashed", linewidth = 0.4, alpha = 0.5) +
+    geom_hline(yintercept = c(hard_lo, hard_hi), linetype = "dotted", linewidth = 0.4, alpha = 0.5) +
+    labs(
+      title = paste("Flow —", community, "—", pid),
+      subtitle = "Grey = within 0.95–1.05 of target; Orange = soft outliers; Red = hard outliers",
+      x = NULL, y = "Flow (L/min)"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(plot.title.position = "plot")
+}
+
+# ---- render: one plot per participant ----
+path <- here::here("weekly_data_checks","upas_data2025","processed")
+rds_files <- list.files(path, pattern = "\\.rds$", full.names = TRUE)
+
+for (file in rds_files) {
+  community <- gsub("list\\.upas_|\\d{8}\\.rds", "", basename(file))
+  core <- make_flow_core(file)
+  if (!nrow(core)) next
+
+  cat(sprintf("## %s — Flow (one plot per participant)\n\n", community))
+  for (pid in unique(core$pid)) {
+    plt <- plot_flow_single(core, pid, community)
+    if (!is.null(plt)) print(plt)
+    cat("\n\n")
+  }
+  cat("\n---\n\n")
+}
+
+```
+
+```{r}
+  
 # library(dplyr)
 # library(plotly)
 # library(data.table)  # for rleid()
