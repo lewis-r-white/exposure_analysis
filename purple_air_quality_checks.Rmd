@@ -1,0 +1,728 @@
+---
+title: "PurpleAir Data Exploration"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_float: true
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This report explores the completeness and quality of PM2.5 data collected from PurpleAir monitors. We assess temporal coverage, identify irregular intervals, investigate unusual readings (e.g., low PM values), and explore correlations across monitors to identify potential sensor issues.
+
+```{r load libraries, include=FALSE}
+# load libraries 
+library(tidyverse)
+library(purrr)
+library(lubridate)
+library(tidyr)
+library(sf)
+library(here)
+library(readxl)
+library(viridis)
+```
+
+# Data Loading and Cleaning
+
+## Load PurpleAir and Personal Exposure Data
+
+```{R load datasets, echo=TRUE, warning=FALSE, message=FALSE}
+# Load datasets
+
+# PURPLE AIR ----
+purpleair_community_r3 <- readRDS(here("exposure_data", "purpleair_community_r3.rds")) 
+
+purpleair <- purpleair_community_r3 %>%
+  mutate(community_id = toupper(community_id),
+         
+         community_id = case_when(
+           community_id == "GUESTHOUSE 1" ~ "GUESTHOUSE",
+           community_id == "GUESTHOUSE 2" ~ "GUESTHOUSE",
+           TRUE ~ community_id),
+         
+         # make sure timestamp right format
+         timestamp = ymd_hms(timestamp),
+        
+         # add date
+         date = date(timestamp))
+
+
+## PERSONAL EXPOSURE ----
+
+upas <- read.csv(here("exposure_data", "upasr3_communities.csv")) %>%
+  distinct(subject_id, .keep_all = TRUE)
+                 
+upas_df <- readRDS(here("exposure_data", "upasr3_rawPMrt.rds"))
+
+upas_as_dataframe <- function(sublist) {
+  df <- as.data.frame(sublist)
+  
+
+  if (!inherits(df$DateTimeLocal, "POSIXct")) {
+    df$DateTimeLocal <- as.POSIXct(df$DateTimeLocal, format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
+  }
+  
+  return(df)
+}
+
+
+upas_df <- do.call(rbind, lapply(upas_df, upas_as_dataframe)) %>% #join all the personal exposure data sets together
+  
+  # join 30 second personal exposure data to summarized personal exposure data 
+  left_join(upas %>% dplyr::select(subject_id, community, compliance_hours, run_time_hour, start_time, end_time), by = "subject_id") %>%  
+  
+  mutate(PM2_5MC = as.numeric(PM2_5MC)) %>% # convert pm reading to numeric 
+  
+  filter(PM2_5MC >= 5 & PM2_5MC <= 800) # filter pm reading to plausible values
+```
+
+## Clean irregular intervals in PurpleAir
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Compute time difference between rows within each community + date
+bad_intervals <- purpleair %>%
+  arrange(community_id, timestamp) %>%
+  group_by(community_id, date) %>%
+  mutate(dt = as.numeric(difftime(timestamp, lag(timestamp), units = "secs"))) %>% # count time difference between timestamps for community / date
+  summarise(median_dt = median(dt, na.rm = TRUE),
+            n_obs = n(),
+            .groups = "drop") %>%
+  filter(median_dt < 60)  # filter recordings faster than every minute
+
+purpleair_clean <- purpleair %>%
+  anti_join(bad_intervals, by = c("community_id", "date")) # remove faster intervals from data
+```
+
+# Data Completeness
+
+## UPAS Personal Monitor Completeness
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+### PLOT HISTOGRAM OF HOW MUCH DATA COVERAGE EXISTS FOR EACH PARTICIPANT ----
+upas_personal_hourly <- upas_df %>%
+  mutate(hourly_time = floor_date(DateTimeLocal, unit = "hours")) %>%
+  group_by(subject_id, hourly_time) %>%
+  summarize(n_obs = n(), 
+            mean_pm25 = mean(PM2_5MC),
+            .groups = "drop") %>%
+  
+  # remove times when there isn't 75% of data in the hour
+  filter(n_obs > 90)
+
+upas_personal_hourly %>%
+  count(subject_id, name = "n_hours") %>%
+  ggplot(aes(x = n_hours)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white", boundary = 0) +
+  labs(
+    title = "Distribution of Personal Exposure Monitoring Hours per Subject",
+    x = "Number of Valid Hours",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+
+
+## PLOT PERSONAL EXPSOURE DATA FOR EACH COMMUNITY OVER TIME ----
+upas_community_hourly <- upas_df %>%
+  mutate(hourly_time = floor_date(DateTimeLocal, unit = "hours")) %>%
+  group_by(community, hourly_time) %>%
+  summarize(n_obs = n(), .groups = "drop") %>%
+  
+  # remove times when there isn't 75% of data in the hour
+  filter(n_obs > 90)
+
+
+ggplot(upas_community_hourly, aes(x = hourly_time, y = community)) +
+  geom_point(alpha = 0.2) +
+  labs(title = "Data availability by community over time",
+       x = "Time (Hourly)",
+       y = "Community") +
+  theme_minimal()
+
+```
+
+## PurpleAir completeness
+
+### PM data
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+## USING PM DATA ----
+# Count rows per community-date
+daily_counts <- purpleair_clean %>%
+  filter(!is.na(pm2_5_atm_final)) %>%
+  count(community_id, date, name = "n_obs") %>%
+  mutate(pct_complete = n_obs / 720)
+
+# filter to days with at least 75% completeness
+daily_good <- daily_counts %>% filter(pct_complete >= 0.75)
+
+ggplot(daily_counts, aes(x = date, y = community_id, fill = pct_complete)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "Daily completeness", limits = c(0, 1)) +
+  labs(title = "PurpleAir Data Completeness by Community",
+       x = "Date", y = "Community") +
+  theme_minimal()
+```
+
+### Weather Data
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+## TRY FOR WEATHER DATA INSTEAD ---- 
+# Count rows per community-date
+daily_counts_rh <- purpleair_clean %>%
+  filter(!is.na(current_humidity)) %>%
+  count(community_id, date, name = "n_obs") %>%
+  mutate(pct_complete = n_obs / 720)
+
+# filter to days with at least 75% completeness
+daily_good_rh <- daily_counts %>% filter(pct_complete >= 0.75)
+
+ggplot(daily_counts_rh, aes(x = date, y = community_id, fill = pct_complete)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "Daily completeness", limits = c(0, 1)) +
+  labs(title = "PurpleAir Data Completeness by Community",
+       x = "Date", y = "Community") +
+  theme_minimal()
+```
+
+The completeness is fairly sparse. A little better with the weather variables, but still sparse, especially until April 2023.
+
+# Distribution of PM Measurements
+
+## Distribution of PM 2.5 Measurment Across All Communities
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Aggregate purpleair data to hourly
+purpleair_hourly <- purpleair_clean %>%
+  mutate(timestamp = floor_date(timestamp, "hour")) %>%
+  filter(!is.na(pm2_5_atm_final)) %>%
+  group_by(community_id, timestamp) %>%
+  filter(n() >= 22) %>%  # Keep only groups with at least 22 observations
+  summarize(
+    pm2_5 = mean(pm2_5_atm_final),
+    pm2_5a = mean(pm2_5_atm_a_),
+    pm2_5b = mean(pm2_5_atm_b_),
+    temp = mean(current_temp_f),
+    rh = mean(current_humidity),
+    dew = mean(current_dewpoint_f),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    hour = hour(timestamp),
+    month = month(timestamp),
+    dow = wday(timestamp),
+    date = as.Date(timestamp)
+  )
+
+
+purpleair_hourly %>% 
+  ggplot(aes(x = pm2_5)) +
+  geom_histogram(binwidth = 25, fill = "steelblue", color = "white", boundary = 0) +
+  labs(
+    title = "Distribution of Purple Air Exposure Monitoring",
+    x = "PM 2.5 Measurement",
+    y = "Number of Hours"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0),
+    panel.grid.minor = element_blank()
+  )
+
+
+purpleair_hourly %>% 
+  filter(pm2_5 < 200) %>%
+  ggplot(aes(x = pm2_5)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white", boundary = 0) +
+  labs(
+    title = "Distribution of Purple Air Exposure Monitoring",
+    subtitle = "Filtered to Under 200",
+    x = "PM 2.5 Measurement",
+    y = "Number of Hours"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Distribution of PM 2.5 Measurment for Each Community
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+median_order <- purpleair_hourly %>%
+  group_by(community_id) %>%
+  summarise(median_pm = median(pm2_5, na.rm = TRUE)) %>%
+  arrange(median_pm) %>%
+  pull(community_id)
+
+purpleair_hourly_ordered <- purpleair_hourly %>%
+  mutate(community_id = factor(community_id, levels = median_order)) %>%
+  filter(pm2_5 < 150) # few values. removing for visualization purposes
+
+ggplot(purpleair_hourly_ordered, aes(x = community_id, y = pm2_5)) +
+  geom_boxplot(outlier.size = 0.5, outlier.alpha = 0.3) +
+  coord_flip() +  # Flip axes for readability
+  labs(title = "PM2.5 Distribution by Community",
+       x = "Community",
+       y = "PM2.5 (µg/m³)") +
+  theme_minimal()
+```
+
+# Investigating Low PM 2.5 Values
+
+Based on exploratory analysis above and looking through the raw data, defining low PM 2.5 as measurements under 6 µg/m³.
+
+## Time series for each sensor
+
+```{r, fig.height=8, fig.width=8, warning=FALSE, message=FALSE}
+## HOURLY PLOT ----
+
+# Reshape to long format
+purpleair_hourly_long <- purpleair_hourly %>%
+  select(community_id, timestamp, pm2_5a, pm2_5b) %>%
+  pivot_longer(cols = c(pm2_5a, pm2_5b),
+               names_to = "sensor",
+               values_to = "pm2_5_value")
+
+# Complete the timestamp grid for each community and sensor
+purpleair_hourly_long_complete <- purpleair_hourly_long %>%
+  group_by(community_id, sensor) %>%
+  complete(timestamp = seq.POSIXt(min(timestamp), max(timestamp), by = "hour")) %>%
+  ungroup()
+
+ggplot(purpleair_hourly_long_complete, aes(x = timestamp, y = pm2_5_value, color = sensor)) +
+  geom_line(alpha = 0.7) +
+  facet_wrap(~ community_id, scales = "free_y") +
+  labs(title = "PM2.5 Time Series: Sensor A vs B",
+       x = "Time",
+       y = "PM2.5 (µg/m³)",
+       color = "Sensor") +
+  theme_minimal()
+
+
+## DAILY PLOT ----
+
+purpleair_daily <- purpleair_hourly %>%
+  mutate(date = as_date(timestamp)) %>%
+  group_by(community_id, date) %>%
+  summarise(
+    n_hours = n(),
+    pm2_5_final_daily = ifelse(n_hours >= 18, mean(pm2_5, na.rm = TRUE), NA_real_),
+    pm2_5a_daily = ifelse(n_hours >= 18, mean(pm2_5a, na.rm = TRUE), NA_real_),
+    pm2_5b_daily = ifelse(n_hours >= 18, mean(pm2_5b, na.rm = TRUE), NA_real_),
+    .groups = "drop"
+  )
+
+daily_complete <- purpleair_daily %>%
+  select(community_id, date, pm2_5_final_daily, pm2_5a_daily, pm2_5b_daily) %>%
+  pivot_longer(cols = starts_with("pm2_5"),
+               names_to = "sensor",
+               values_to = "pm2_5") %>%
+  group_by(community_id, sensor) %>%
+  complete(date = seq.Date(min(date), max(date), by = "day")) %>%
+  ungroup()
+
+ggplot(daily_complete, aes(x = date, y = pm2_5, color = sensor)) +
+  geom_line() +
+  facet_wrap(~ community_id, scales = "free_y") +
+  labs(title = "Daily PM2.5: Sensor A vs B (≥18 hrs of data)",
+       x = "Date", y = "PM2.5 (µg/m³)", color = "Sensor") +
+  theme_minimal()
+
+
+
+
+
+
+
+## HOURLY KEY COMMUNITIES 
+
+key_communities_hourly <- purpleair_hourly_long_complete %>%
+  filter(community_id %in% c("PRAMPOSO", "AKORA", "AMPOMA", "NANTE ZONGO", "PAMDU")) %>%
+  filter(timestamp > as.Date("2023-09-15"))
+
+ggplot(key_communities_hourly, aes(x = timestamp, y = pm2_5_value, color = sensor)) +
+  geom_line() +
+  facet_wrap(~ community_id, scales = "free_y") +
+  labs(title = "Daily PM2.5: Sensor A vs B (≥18 hrs of data)",
+       x = "Date", y = "PM2.5 (µg/m³)", color = "Sensor") +
+  theme_minimal()
+
+
+
+# DAILY KEY COMMUNITIES 
+
+key_communities <- daily_complete %>%
+  filter(community_id %in% c("PRAMPOSO", "AKORA", "AMPOMA", "NANTE ZONGO", "PAMDU")) %>%
+  filter(date > as.Date("2023-09-15"))
+
+ggplot(key_communities, aes(x = date, y = pm2_5, color = sensor)) +
+  geom_line() +
+  facet_wrap(~ community_id, scales = "free_y") +
+  labs(title = "Daily PM2.5: Sensor A vs B (≥18 hrs of data)",
+       x = "Date", y = "PM2.5 (µg/m³)", color = "Sensor") +
+  theme_minimal()
+```
+
+
+## Examining PM 2.5, Dew, Temperature and RH.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+pa_hourly_explore_anomalies <- purpleair_hourly %>%
+  mutate(low_pm = ifelse(pm2_5 < 6, 1, 0)) %>%
+  mutate(temp_below_dew = ifelse(temp < dew, 1, 0)) %>%
+  mutate(year = year(date))
+
+## TESTING IF TEMP BELOW DEW IS CAUSING LOW READINGS ----
+pa_hourly_explore_anomalies %>% filter(temp_below_dew == 1) # just two obs. both suspiciously high dew. 
+
+# Also tried temp < dew + 1 and number of obs remained low. 
+# CONCLUSION: UNLIKELY TEMP BELOW DEW CUASING WIDESPREAD MONITOR ISSUES 
+
+
+## Comparison of dew for low vs high PM ---- 
+pa_hourly_explore_anomalies %>%
+  mutate(low_pm_label = ifelse(low_pm == 1, "PM < 6", "PM > 6")) %>%
+  ggplot(aes(y = dew)) +
+  geom_boxplot() +
+  labs(x = "Hourly PM Value",
+       y = "Dew Point",
+       title = "Distribution of Dew Point for PM 2.5 Groupings",
+       subtitle = "Dew Point Temperature Trends Higher for Lower PM 2.5 Readings") +
+  facet_wrap(~low_pm_label) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) 
+
+## Comparison of RH for low vs high PM ---- 
+pa_hourly_explore_anomalies %>%
+  mutate(low_pm_label = ifelse(low_pm == 1, "PM < 6", "PM > 6")) %>%
+  ggplot(aes(y = rh)) +
+  geom_boxplot() +
+  labs(x = "Hourly PM Value",
+       y = "Relative Humidity",
+       title = "Distribution of Relative Humidity for PM 2.5 Groupings",
+       subtitle = "Relative Humidity Trends Higher for Lower PM 2.5 Readings") +
+  facet_wrap(~low_pm_label) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) 
+
+## Comparison of temperature for low vs high PM ---- 
+pa_hourly_explore_anomalies %>%
+  mutate(low_pm_label = ifelse(low_pm == 1, "PM < 6", "PM > 6")) %>%
+  ggplot(aes(y = temp)) +
+  geom_boxplot() +
+  labs(x = "Hourly PM Value",
+       y = "Temperature",
+       title = "Distribution of Temperature for PM 2.5 Groupings",
+       subtitle = "Temperature Distributions Appear Similar") +
+  facet_wrap(~low_pm_label) +
+  theme_bw() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  ) 
+
+```
+
+## Proportion of Low PM 2.5 by Community
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+low_pm_by_community <- pa_hourly_explore_anomalies %>%
+  group_by(community_id, low_pm) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = low_pm, values_from = n, values_fill = 0) %>%
+  rename(pm_above_6 = `0`, pm_below_6 = `1`) %>%
+  mutate(total = pm_above_6 + pm_below_6,
+         prop_low_pm = pm_below_6 / total)
+
+low_pm_by_community %>%
+  ggplot(aes(x = reorder(community_id, -prop_low_pm), y = prop_low_pm)) +
+  geom_col(fill = "steelblue4") +
+  coord_flip() +
+  labs(
+    x = "Community",
+    y = "Proportion of PM < 6 Readings",
+    title = "Proportion of Low PM Readings by Community"
+  ) +
+  theme_minimal()
+```
+
+## Community + Temporal Trends in Low PM 2.5
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+pa_hourly_explore_anomalies %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(community_id, month, low_pm) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = low_pm, values_from = n, values_fill = 0) %>%
+  rename(pm_above_6 = `0`, pm_below_6 = `1`) %>%
+  mutate(total = pm_above_6 + pm_below_6,
+         prop_low_pm = pm_below_6 / total) %>%
+  ggplot(aes(x = month, y = reorder(community_id, -prop_low_pm), fill = prop_low_pm)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "Prop. PM < 6", limits = c(0, 1)) +
+  labs(
+    x = "Month",
+    y = "Community",
+    title = "Proportion of Low PM2.5 Readings (<6) by Community and Month",
+    subtitle = "Heatmap Suggests Data Quality Issues for Several Monitors"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The plot suggests some major issues with the measurements for some of the communities. The PM reading should not consistently be under 6, especially during the Harmattan season.
+
+Communities with entirely suspicious data: \* Ajena, Akora, Krutakyi, Kunsu
+
+## Re-examine the Raw Data for 100% Low PM Monitors
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+kunsu_full <- purpleair_clean %>% filter(community_id == "KUNSU") 
+
+kunsu_full %>% 
+  select(community_id, timestamp, pm2_5_atm_a_, pm2_5_atm_b_, pm2_5_atm_final) %>% 
+  filter(!is.na(pm2_5_atm_final)) %>%
+  head(n = 100) %>%
+  DT::datatable()
+
+ajena_full <- purpleair_clean %>% filter(community_id == "AJENA") 
+
+ajena_full %>% 
+  select(community_id, timestamp, pm2_5_atm_a_, pm2_5_atm_b_, pm2_5_atm_final) %>% 
+  filter(!is.na(pm2_5_atm_final)) %>%
+  head(n = 100) %>%
+  DT::datatable()
+
+```
+
+It appears that there is an issue with at least one of the sensors for each of these monitors, with readings essentially 0.
+
+## Cross-Monitor Correlations Checks
+
+```{r, fig.height=8, fig.width=8, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggcorrplot)
+
+# Pivot to wide format
+pm_wide <- purpleair_hourly %>%
+  filter(pm2_5 > 7) %>%
+  select(timestamp, community_id, pm2_5) %>%
+  pivot_wider(names_from = community_id, values_from = pm2_5)
+
+# Remove constant or all-NA columns
+pm_wide_filtered <- pm_wide %>%
+  select(-timestamp) %>%
+  select(where(~ sd(., na.rm = TRUE) > 0 & sum(!is.na(.)) >= 100))  # enforce 100+ obs for cor plot
+
+# Correlation matrix
+cor_matrix <- cor(pm_wide_filtered, use = "pairwise.complete.obs")
+
+# Pairwise complete observations
+overlap_matrix <- outer(
+  colnames(pm_wide_filtered), colnames(pm_wide_filtered),
+  Vectorize(function(x, y) sum(complete.cases(pm_wide_filtered[[x]], pm_wide_filtered[[y]])))
+)
+
+rownames(overlap_matrix) <- colnames(overlap_matrix) <- colnames(pm_wide_filtered)
+
+# Mask correlations with < 100 overlaps
+cor_matrix[overlap_matrix < 100] <- NA
+
+# make the correlation matrix
+ggcorrplot(cor_matrix,
+           type = "lower",
+           lab = TRUE,
+           lab_size = 2.5,
+           colors = c("blue", "white", "red"),
+           outline.color = "gray") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Matrix for PM 2.5")
+
+## SOME SUSPICIOUS PERFECT CORRELATIONS AND NEGATIVE CORRELATIONS... FURTHER INVESTIGATION BELOW.
+
+# Pick two communities
+scatter_df <- pm_wide %>%
+  select(timestamp, BUSUAMA, `NANTE ZONGO`) %>%
+  filter(!is.na(BUSUAMA) & !is.na(`NANTE ZONGO`))  # Only overlapping times
+
+# Plot
+ggplot(scatter_df, aes(x = BUSUAMA, y = `NANTE ZONGO`)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "PM2.5: BUSUAMA vs `NANTE ZONGO`",
+       x = "BUSUAMA PM2.5",
+       y = "`NANTE ZONGO` PM2.5") +
+  theme_minimal()
+
+## Seems like there might be an issue here
+```
+
+### correlation checks for non-PM vars
+
+```{r, fig.height=8, fig.width=8}
+### TEMPERATURE -----
+
+# Pivot to wide format
+temp_wide <- purpleair_hourly %>%
+  select(timestamp, community_id, temp) %>%
+  pivot_wider(names_from = community_id, values_from = temp)
+
+# Remove constant or all-NA columns
+temp_wide_filtered <- temp_wide %>%
+  select(-timestamp) %>%
+  select(where(~ sd(., na.rm = TRUE) > 0 & sum(!is.na(.)) >= 100))  # enforce 100+ obs for cor plot
+
+# Correlation matrix
+cor_matrix <- cor(temp_wide_filtered, use = "pairwise.complete.obs")
+
+# Pairwise complete observations
+overlap_matrix <- outer(
+  colnames(temp_wide_filtered), colnames(temp_wide_filtered),
+  Vectorize(function(x, y) sum(complete.cases(temp_wide_filtered[[x]], temp_wide_filtered[[y]])))
+)
+
+rownames(overlap_matrix) <- colnames(overlap_matrix) <- colnames(temp_wide_filtered)
+
+# Mask correlations with < 100 overlaps
+cor_matrix[overlap_matrix < 100] <- NA
+
+# make the correlation matrix
+ggcorrplot(cor_matrix,
+           type = "lower",
+           lab = TRUE,
+           lab_size = 2.5,
+           colors = c("blue", "white", "red"),
+           outline.color = "gray") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Matrix for Temperature")
+
+
+
+### RH -----
+
+# Pivot to wide format
+rh_wide <- purpleair_hourly %>%
+  select(timestamp, community_id, rh) %>%
+  pivot_wider(names_from = community_id, values_from = rh)
+
+# Remove constant or all-NA columns
+rh_wide_filtered <- rh_wide %>%
+  select(-timestamp) %>%
+  select(where(~ sd(., na.rm = TRUE) > 0 & sum(!is.na(.)) >= 100))  # enforce 100+ obs for cor plot
+
+# Correlation matrix
+cor_matrix <- cor(rh_wide_filtered, use = "pairwise.complete.obs")
+
+# Pairwise complete observations
+overlap_matrix <- outer(
+  colnames(rh_wide_filtered), colnames(rh_wide_filtered),
+  Vectorize(function(x, y) sum(complete.cases(rh_wide_filtered[[x]], rh_wide_filtered[[y]])))
+)
+
+rownames(overlap_matrix) <- colnames(overlap_matrix) <- colnames(rh_wide_filtered)
+
+# Mask correlations with < 100 overlaps
+cor_matrix[overlap_matrix < 100] <- NA
+
+# make the correlation matrix
+ggcorrplot(cor_matrix,
+           type = "lower",
+           lab = TRUE,
+           lab_size = 2.5,
+           colors = c("blue", "white", "red"),
+           outline.color = "gray") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Matrix for Relative Humidity")
+
+
+
+## A few negative correlations. more below. 
+
+# Pick two communities
+scatter_df <- rh_wide %>%
+  select(timestamp, KAWAMPE, KUNSU) %>%
+  filter(!is.na(KAWAMPE) & !is.na(KUNSU))  # Only overlapping times
+
+# Plot
+ggplot(scatter_df, aes(x = KAWAMPE, y = KUNSU)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "RH: KAWAMPE vs KUNSU",
+       x = "KAWAMPE RH",
+       y = "KUNSU RH") +
+  theme_minimal()
+
+
+
+
+### DEW -----
+
+# Pivot to wide format
+dew_wide <- purpleair_hourly %>%
+  select(timestamp, community_id, dew) %>%
+  pivot_wider(names_from = community_id, values_from = dew)
+
+# Remove constant or all-NA columns
+dew_wide_filtered <- dew_wide %>%
+  select(-timestamp) %>%
+  select(where(~ sd(., na.rm = TRUE) > 0 & sum(!is.na(.)) >= 100))  # enforce 100+ obs for cor plot
+
+# Correlation matrix
+cor_matrix <- cor(dew_wide_filtered, use = "pairwise.complete.obs")
+
+# Pairwise complete observations
+overlap_matrix <- outer(
+  colnames(dew_wide_filtered), colnames(dew_wide_filtered),
+  Vectorize(function(x, y) sum(complete.cases(dew_wide_filtered[[x]], dew_wide_filtered[[y]])))
+)
+
+rownames(overlap_matrix) <- colnames(overlap_matrix) <- colnames(dew_wide_filtered)
+
+# Mask correlations with < 100 overlaps
+cor_matrix[overlap_matrix < 100] <- NA
+
+# make the correlation matrix
+ggcorrplot(cor_matrix,
+           type = "lower",
+           lab = TRUE,
+           lab_size = 2.5,
+           colors = c("blue", "white", "red"),
+           outline.color = "gray") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Correlation Matrix for Relative Humidity")
+
+```
+
+## Summary and Next Steps
+
+**Summary:**
+
+-   Data completeness is sparse, particularly in earlier months,
+-   Several monitors (e.g., AJENA, KUNSU) consistently show suspiciously low PM 2.5 or flat readings. This suggests an issue with the data and data cleaning steps.
+
+**Potential next steps:**
+
+-   Removing data from monitors showing implausible patterns
+
+-   Reaching out to PurpleAir customer support to confirm best steps for cleaning the data

@@ -9,7 +9,7 @@ summary_files <- list.files(summary_path, pattern = "^pm_summary_upas_.*\\.csv$"
 
 # robust parser that accepts ISO strings, epoch seconds/ms, or Excel dates
 parse_mixed_time <- function(x) {
-  x_chr <- as.character(x)
+  x_chr <- as.character(x) # convert valeus to characters 
   
   # Try ISO-like datetime strings first
   out <- suppressWarnings(
@@ -22,7 +22,7 @@ parse_mixed_time <- function(x) {
     )
   )
   
-  # Handle numeric epoch
+  # Handle numeric epoch (This attempts to convert strings like: "2025-01-10 15:22:00" "20250110T1522Z" "20250110" into POSIXct datetimes.)
   idx_num <- which(grepl("^[0-9]+(\\.[0-9]+)?$", x_chr))
   if (length(idx_num)) {
     n <- suppressWarnings(as.numeric(x_chr[idx_num]))
@@ -70,29 +70,29 @@ master_upas_summary <- purrr::map_dfr(summary_files, function(file) {
 write_csv(master_upas_summary, here::here("weekly_data_checks", "upas_data2025", paste0("upas_all_data_",  Sys.Date(), ".csv")))
 
 
-
-## UPAS ANALYSIS 
-
-rev_analysis <- master_upas_summary %>%
-  mutate(new_rev = ifelse(start_time >= as.Date("2025-08-01"), 1, 0),
-         
-         low_runtime = ifelse(run_time_hour < 40, 1, 0))
-
-rev_analysis %>% group_by(new_rev) %>% summarise(mean_runtime = mean(run_time_hour))
-           
-
-t.test(run_time_hour ~ new_rev, data = rev_analysis)
-
-# wilcoxon rank-sum test (non-parametric)
-wilcox.test(run_time_hour ~ new_rev, data = rev_analysis)
-
-
-
-
-tab <- table(rev_analysis$new_rev, rev_analysis$low_runtime)
-
-# chi-square test (if all expected counts > 5)
-chisq.test(tab)
-
-# Fisher's exact test (safer with small counts)
-fisher.test(tab)
+# 
+# ## UPAS ANALYSIS 
+# 
+# rev_analysis <- master_upas_summary %>%
+#   mutate(new_rev = ifelse(start_time >= as.Date("2025-08-01"), 1, 0),
+#          
+#          low_runtime = ifelse(run_time_hour < 40, 1, 0))
+# 
+# rev_analysis %>% group_by(new_rev) %>% summarise(mean_runtime = mean(run_time_hour))
+#            
+# 
+# t.test(run_time_hour ~ new_rev, data = rev_analysis)
+# 
+# # wilcoxon rank-sum test (non-parametric)
+# wilcox.test(run_time_hour ~ new_rev, data = rev_analysis)
+# 
+# 
+# 
+# 
+# tab <- table(rev_analysis$new_rev, rev_analysis$low_runtime)
+# 
+# # chi-square test (if all expected counts > 5)
+# chisq.test(tab)
+# 
+# # Fisher's exact test (safer with small counts)
+# fisher.test(tab)

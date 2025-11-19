@@ -55,15 +55,15 @@ A color-coded `.xlsx` for QC review
 ```{r,echo = FALSE}
 
 ##Import raw UPAS files. This should be folder containing the txt files. 
-path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/ABUDWUM UPAS DATA_20251026"
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/AJENA_UPAS_DATA_20251105"
 
 file_upas <- list.files(path, pattern = "*.txt", full.names = F,recursive = TRUE)
 
 length(file_upas) # check to make sure data is there
 
 # specify meta data (pull this from file name)
-date = "20251026"
-community = "abudwum"
+date = "20251105"
+community = "ajena"
 ```
 
 

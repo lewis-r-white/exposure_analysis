@@ -1,0 +1,773 @@
+---
+title: "PurpleAir XGBoost Imputation"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_float: true
+date: "`r Sys.Date()`"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+This notebook documents the modeling process used to impute hourly PM 2.5 concentrations from PurpleAir monitors in Ghana. Two options are tried. 
+
+1. **Fleet-average model**: Uses the mean PM 2.5 from other monitors plus weather/time features and interactions between PM 2.5 measurement and community. 
+
+2. **Wide-format model**: Uses all other communities' PM 2.5 values as predictors, excluding the target community's value to avoid leakage.
+
+Each approach is evaluated using RMSE and R², both on test data and in-sample fits.
+
+```{r load libraries, include=FALSE}
+# load libraries 
+library(tidyverse)
+library(purrr)
+library(lubridate)
+library(tidyr)
+library(sf)
+library(here)
+library(readxl)
+
+library(performance)
+library(lme4)
+library(ICC)
+library(broom)
+library(modelr)
+library(viridis)
+
+# ML packages 
+library(tidymodels)
+library(tictoc)
+library(vip)
+library(patchwork)
+library(doParallel)
+library(xgboost)
+library(glmnet)
+library(mgcv)
+library(yardstick) 
+library(furrr)
+library(future)
+```
+
+
+## Data Loading and Cleaning
+
+```{R load datasets, message=FALSE, warning=FALSE}
+# PURPLE AIR ----
+purpleair_community_r3 <- readRDS(here("exposure_data", "purpleair_community_r3.rds")) 
+
+purpleair <- purpleair_community_r3 %>%
+  mutate(community_id = toupper(community_id),
+         
+         community_id = case_when(
+           community_id == "GUESTHOUSE 1" ~ "GUESTHOUSE",
+           community_id == "GUESTHOUSE 2" ~ "GUESTHOUSE",
+           TRUE ~ community_id),
+         
+         # make sure timestamp right format
+         timestamp = ymd_hms(timestamp),
+        
+         # add date
+         date = date(timestamp))
+```
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# REMOVE DATA WITH 5 SECOND RECORDING INTERVAL
+
+# Compute time difference between rows within each community + date
+bad_intervals <- purpleair %>%
+  arrange(community_id, timestamp) %>%
+  group_by(community_id, date) %>%
+  mutate(dt = as.numeric(difftime(timestamp, lag(timestamp), units = "secs"))) %>%
+  summarise(median_dt = median(dt, na.rm = TRUE),
+            n_obs = n(),
+            .groups = "drop") %>%
+  filter(median_dt < 60)  # i.e., faster than every minute
+
+purpleair_clean <- purpleair %>%
+  anti_join(bad_intervals, by = c("community_id", "date"))
+```
+
+# Exploratory Completeness and Distribution Checks
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+## USING PM DATA ----
+# Count rows per community-date
+daily_counts <- purpleair_clean %>%
+  filter(!is.na(pm2_5_atm_final)) %>%
+  count(community_id, date, name = "n_obs") %>%
+  mutate(pct_complete = n_obs / 720)
+
+# filter to days with at least 75% completeness
+daily_good <- daily_counts %>% filter(pct_complete >= 0.75)
+
+ggplot(daily_counts, aes(x = date, y = community_id, fill = pct_complete)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(name = "Daily completeness", limits = c(0, 1)) +
+  labs(title = "PurpleAir Data Completeness by Community",
+       x = "Date", y = "Community") +
+  theme_minimal()
+
+```
+ 
+## Prepare Hourly Data
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Aggregate purpleair data to hourly
+purpleair_hourly <- purpleair_clean %>%
+  mutate(timestamp = floor_date(timestamp, "hour")) %>%
+  filter(!is.na(pm2_5_atm_final)) %>%
+  group_by(community_id, timestamp) %>%
+  filter(n() >= 22) %>%  # Keep only groups with at least 22 observations
+  summarize(
+    pm2_5 = mean(pm2_5_atm_final),
+    temp = mean(current_temp_f),
+    rh = mean(current_humidity),
+    dew = mean(current_dewpoint_f),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    hour = hour(timestamp),
+    month = month(timestamp),
+    dow = wday(timestamp),
+    date = as.Date(timestamp)
+  )
+
+purpleair_hourly %>% ggplot(aes(x = pm2_5)) +
+  geom_histogram(binwidth = 25, fill = "steelblue", color = "white", boundary = 0) +
+  labs(
+    title = "Distribution of Personal Exposure Monitoring",
+    x = "PM 2.5 Measurement",
+    y = "Number of Hours"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+
+purpleair_hourly %>% 
+  filter(pm2_5 < 200) %>%
+  ggplot(aes(x = pm2_5)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white", boundary = 0) +
+  labs(
+    title = "Distribution of Personal Exposure Monitoring",
+    x = "PM 2.5 Measurement",
+    y = "Number of Hours"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+## Baseline Imputation Model: Use Mean of Other Available Monitors 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+purpleair_hourly_fleet_avg <- purpleair_hourly %>%
+  group_by(timestamp) %>%
+  mutate(
+    n_reporting = sum(!is.na(pm2_5)),  # total non-missing PM2.5 at that hour
+    fleet_avg_pm2_5 = ifelse(
+      !is.na(pm2_5) & n_reporting > 1,
+      (sum(pm2_5, na.rm = TRUE) - pm2_5) / (n_reporting - 1),
+      ifelse(n_reporting > 0, sum(pm2_5, na.rm = TRUE) / n_reporting, NA)
+      )
+  ) %>%
+  ungroup() %>%
+  filter(n_reporting >= 1) # could adjust if want to ensure fleet average included a minimum number of monitors 
+
+
+## CHECK METRICS 
+
+# Filter only rows where both actual and predicted values are available
+fleet_eval <- purpleair_hourly_fleet_avg %>%
+  filter(!is.na(pm2_5), !is.na(fleet_avg_pm2_5))
+
+# Evaluate performance
+fleet_metrics <- metrics(fleet_eval, truth = pm2_5, estimate = fleet_avg_pm2_5)
+print(fleet_metrics)
+
+#  .metric .estimator .estimate
+#   <chr>   <chr>          <dbl>
+# 1 rmse    standard      19.6  
+# 2 rsq     standard       0.525
+# 3 mae     standard      10.5  
+
+ggplot(fleet_eval, aes(x = pm2_5, y = fleet_avg_pm2_5)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(
+    title = "Fleet Average: Observed vs. Predicted PM2.5",
+    x = "Observed PM2.5",
+    y = "Fleet Average PM2.5 (Predicted)"
+  ) +
+  theme_minimal()
+```
+
+
+# XG BOOST to impute missing data ----
+
+## Option 1: XGBoost with Fleet Average and Community Interactions
+
+###  Prepare Modeling Data
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+purpleair_hourly_fleet_avg <- purpleair_hourly %>%
+  group_by(timestamp) %>%
+  mutate(
+    n_reporting = sum(!is.na(pm2_5)),  # total non-missing PM2.5 at that hour
+    fleet_avg_pm2_5 = ifelse(
+      !is.na(pm2_5) & n_reporting > 1,
+      (sum(pm2_5, na.rm = TRUE) - pm2_5) / (n_reporting - 1),
+      ifelse(n_reporting > 0, sum(pm2_5, na.rm = TRUE) / n_reporting, NA)
+      )
+  ) %>%
+  ungroup() %>%
+  filter(n_reporting >= 3)
+```
+
+### Set Up Train-Test Split & Cross-Validation 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123) # for reproduceability
+
+split <- initial_split(purpleair_hourly_fleet_avg, prop = 0.8) # tried stratifying by community but not enough data
+train <- training(split)
+test <- testing(split)
+
+
+#set up cross validation 
+cv_folds <- vfold_cv(train, v = 5)
+```
+
+### Create Preprocessing Recipe
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+pa_recipe <- recipe(pm2_5 ~ fleet_avg_pm2_5 + community_id + hour + month + dow + temp + rh + dew, data = train) %>%
+  step_mutate(
+    hour = as.factor(hour),
+    month = as.factor(month),
+    dow = as.factor(dow)
+  ) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_interact(terms = ~ starts_with("community_id"):fleet_avg_pm2_5) # interaction between community and fleet average
+
+```
+
+### XGBoost model specification 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+xgb_spec <- boost_tree(
+  trees = 1000,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  mtry = tune()
+) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+
+```
+
+### Tune Hyperparameters 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+xgb_grid <- grid_max_entropy(
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  sample_prop(),
+  finalize(mtry(), train),
+  size = 20
+)
+
+xgb_wf <- workflow() %>%
+  add_recipe(pa_recipe) %>%
+  add_model(xgb_spec)
+
+tictoc::tic()
+
+registerDoParallel()
+set.seed(123)
+
+xgb_tuned <- tune_grid(
+  xgb_wf,
+  resamples = cv_folds,
+  grid = xgb_grid,
+  metrics = metric_set(rmse, rsq, mae)
+)
+
+tictoc::toc() # around 50 mins
+beepr::beep(sound = 2)
+```
+
+
+### Finalize Model and Evaluate on Test Set
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+best_params <- select_best(xgb_tuned, metric = "rmse")
+
+final_wf <- finalize_workflow(xgb_wf, best_params)
+
+final_fit <- last_fit(final_wf, split)
+
+collect_metrics(final_fit)
+          
+#   .metric .estimator .estimate .config             
+#   <chr>   <chr>          <dbl> <chr>               
+# 1 rmse    standard       9.81  Preprocessor1_Model1
+# 2 rsq     standard       0.878 Preprocessor1_Model1
+```
+
+
+### Evaluate Model Performance on Test Set
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+model_test_eval <- fit(final_wf, data = train)
+
+test_results <- test %>%
+  mutate(predicted_pm = predict(model_test_eval, new_data = test)$.pred) %>%
+  mutate(error = pm2_5 - predicted_pm)
+
+# Observed vs predicted
+ggplot(test_results, aes(x = pm2_5, y = predicted_pm)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "XGBoost: Observed vs. Predicted PM2.5 (Test Set)",
+       x = "Observed PM2.5",
+       y = "Predicted PM2.5") +
+  theme_minimal()
+
+# Error by community
+error_summary_test <- test_results %>%
+  group_by(community_id) %>%
+  summarise(
+    rmse = sqrt(mean(error^2, na.rm = TRUE)),
+    mae = mean(abs(error), na.rm = TRUE),
+    rsq = cor(pm2_5, predicted_pm, use = "complete.obs")^2,
+    n = n()
+  )
+
+# Barplot of RMSE by community (test set)
+ggplot(error_summary_test, aes(x = reorder(community_id, rmse), y = rmse)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "XGBoost: RMSE by Community (Test Set)",
+       x = "Community",
+       y = "RMSE (µg/m³)") +
+  theme_minimal()
+```
+
+
+### In-Sample Performance on Full Dataset
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Fit final model on full training set
+final_model <- fit(final_wf, data = purpleair_hourly_fleet_avg)
+
+# Predict on full data
+purpleair_hourly_fleet_avg <- purpleair_hourly_fleet_avg %>%
+  mutate(predicted_pm = predict(final_model, new_data = purpleair_hourly_fleet_avg)$.pred)
+
+
+# plot observed vs expected 
+ggplot(purpleair_hourly_fleet_avg, aes(x = pm2_5, y = predicted_pm)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(
+  title = "XGBoost with Fleet Avg: In-Sample Fit on Full Dataset",
+  x = "Observed PM2.5",
+  y = "Predicted PM2.5"
+) +
+  theme_minimal()
+
+
+# visualize errors by community
+purpleair_hourly_fleet_avg <- purpleair_hourly_fleet_avg %>%
+  mutate(error = pm2_5 - predicted_pm)
+
+# In-sample error by community
+error_summary <- purpleair_hourly_fleet_avg %>%
+  group_by(community_id) %>%
+  summarize(rmse = sqrt(mean(error^2, na.rm = TRUE)),
+            mae = mean(abs(error), na.rm = TRUE),
+            rsq = cor(pm2_5, predicted_pm, use = "complete.obs")^2)
+
+# Barplot of RMSE by community
+ggplot(error_summary, aes(x = reorder(community_id, rmse), y = rmse)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+  title = "XGBoost In-Sample RMSE by Community (Full Dataset)",
+  x = "Community",
+  y = "RMSE (µg/m³)"
+) +
+  theme_minimal()
+```
+
+### Variable Importance from Final Model
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Bake the training data using the recipe from your workflow
+baked_train <- prep(pa_recipe) %>%
+  bake(new_data = train)
+
+# Extract final tuned parameters
+final_model_spec <- boost_tree(
+  trees = 1000,
+  learn_rate = best_params$learn_rate,
+  tree_depth = best_params$tree_depth,
+  loss_reduction = best_params$loss_reduction,
+  sample_size = best_params$sample_size,
+  mtry = best_params$mtry
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# Fit model directly
+xgb_fit <- fit(final_model_spec, pm2_5 ~ ., data = baked_train)
+
+
+vip(xgb_fit, num_features = 20, geom = "col") +
+  labs(title = "Top 20 Variable Importances from XGBoost Model")
+
+```
+
+
+## Option 2: Using Individual Communities' PM 2.5 as Columns 
+
+This section uses a wide-format approach where each community’s PM2.5 value is a separate predictor. To prevent leakage, each row masks the target community’s value before fitting the model.
+
+### Prepare Wide-Format Data
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+## Prepare data for modeling with leakage protection
+
+purpleair_wide <- purpleair_hourly %>%
+  dplyr::select(timestamp, community_id, pm2_5) %>%
+  pivot_wider(names_from = community_id, values_from = pm2_5, names_prefix = "pm2_5_")
+
+purpleair_model_data <- purpleair_hourly %>%
+  left_join(purpleair_wide, by = "timestamp") %>%
+  filter(!is.na(pm2_5))  # Keep only rows with observed PM2.5 (target)
+
+# # remove the target community's own PM2.5 column to prevent leakage
+
+# Create a column with the name of the predictor to blank
+purpleair_model_data <- purpleair_model_data %>%
+  mutate(target_column = paste0("pm2_5_", community_id))
+
+# Get the column names of all wide-format PM2.5 predictors
+pm_cols <- grep("^pm2_5_", names(purpleair_model_data), value = TRUE)
+
+# Blank out the target community column in one shot
+for (col in pm_cols) {
+  purpleair_model_data[[col]] <- ifelse(
+    purpleair_model_data$target_column == col,
+    NA_real_,
+    purpleair_model_data[[col]]
+  )
+}
+```
+
+### Train-Test Split and Cross-Validation
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+set.seed(123)
+split_xgb_all_coms <- initial_split(purpleair_model_data, prop = 0.8) # tried stratifying by community but not enough data
+train_xgb_all_coms <- training(split_xgb_all_coms)
+test_xgb_all_coms <- testing(split_xgb_all_coms)
+
+#set up cross validation 
+cv_folds_xgb_all_coms<- vfold_cv(train_xgb_all_coms, v = 5)
+```
+
+### Pre-processing Recipe
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+all_pm_cols <- grep("^pm2_5_", names(purpleair_model_data), value = TRUE)
+
+recipe_xgb_all_coms <- recipe(pm2_5 ~ ., data = purpleair_model_data) %>%
+  update_role(timestamp, new_role = "ID") %>%
+  update_role(date, new_role = "ID") %>%  
+  step_mutate(
+    hour = as.factor(hour),
+    month = as.factor(month),
+    dow = as.factor(dow)
+  ) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_normalize(all_numeric_predictors())
+
+```
+
+### XGBoost Model Specification 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+spec_xgb_all_coms <- boost_tree(
+  trees = 1000,
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  mtry = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("xgboost")
+```
+
+### Hyperparameter Tuning
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+grid_xgb_all_coms <- grid_max_entropy(
+  tree_depth(),
+  learn_rate(),
+  loss_reduction(),
+  sample_prop(),
+  finalize(mtry(), train),
+  size = 20
+)
+
+wf_xgb_all_coms <- workflow() %>%
+  add_recipe(recipe_xgb_all_coms) %>%
+  add_model(spec_xgb_all_coms)
+
+tictoc::tic()
+
+registerDoParallel()
+set.seed(123)
+
+tuned_xgb_all_coms <- tune_grid(
+  wf_xgb_all_coms,
+  resamples = cv_folds_xgb_all_coms,
+  grid = grid_xgb_all_coms,
+  metrics = metric_set(rmse, rsq, mae)
+)
+
+tictoc::toc()
+beepr::beep(sound = 2) # toook an hour and five mins
+```
+
+
+### Finalize Model & Evaluate on Test Set
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+best_params_xgb_all_coms <- select_best(tuned_xgb_all_coms, metric = "rmse")
+
+final_wf_xgb_all_coms <- finalize_workflow(wf_xgb_all_coms, best_params_xgb_all_coms)
+
+final_fit_xgb_all_coms <- last_fit(final_wf_xgb_all_coms, split_xgb_all_coms)
+
+collect_metrics(final_fit_xgb_all_coms) 
+# rmse    standard       8.53  Preprocessor1_Model1
+# rsq     standard       0.913 Preprocessor1_Model1
+```
+
+
+### Test Set Predictions & Community-Level Error
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+model_test_eval_xgb_all_coms <- fit(final_wf_xgb_all_coms, data = train_xgb_all_coms)
+
+test_results_xgb_all_coms <- test_xgb_all_coms %>%
+  mutate(predicted_pm = predict(model_test_eval_xgb_all_coms, new_data = test_xgb_all_coms)$.pred) %>%
+  mutate(error = pm2_5 - predicted_pm)
+
+# Observed vs predicted
+ggplot(test_results_xgb_all_coms, aes(x = pm2_5, y = predicted_pm)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "XGBoost All Monitors: Observed vs. Predicted PM2.5 (Test Set)",
+       x = "Observed PM2.5",
+       y = "Predicted PM2.5") +
+  theme_minimal()
+
+# Error by community
+error_summary_test_xgb_all_coms <- test_results_xgb_all_coms %>%
+  group_by(community_id) %>%
+  summarise(
+    rmse = sqrt(mean(error^2, na.rm = TRUE)),
+    mae = mean(abs(error), na.rm = TRUE),
+    rsq = cor(pm2_5, predicted_pm, use = "complete.obs")^2,
+    n = n()
+  )
+
+# Barplot of RMSE by community (test set)
+ggplot(error_summary_test_xgb_all_coms, aes(x = reorder(community_id, rmse), y = rmse)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "XGBoost All Monitors: RMSE by Community (Test Set)",
+       x = "Community",
+       y = "RMSE (µg/m³)") +
+  theme_minimal()
+```
+
+
+### In-Sample Fit on Full Dataset
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Fit final model on full training set
+final_model_xgb_all_coms <- fit(final_wf_xgb_all_coms, data = purpleair_model_data)
+
+# Predict on full data
+purpleair_model_data_xgb_all_coms <- purpleair_model_data %>%
+  mutate(predicted_pm = predict(final_model_xgb_all_coms, new_data = purpleair_model_data)$.pred)
+
+
+# plot observed vs expected 
+ggplot(purpleair_model_data_xgb_all_coms, aes(x = pm2_5, y = predicted_pm)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "XG Boost All Monitors: In-Sample Fit Full Dataset",
+       x = "Observed PM2.5",
+       y = "Predicted PM2.5") +
+  theme_minimal()
+
+
+# visualize errors by community
+purpleair_model_data_xgb_all_coms <- purpleair_model_data_xgb_all_coms %>%
+  mutate(error = pm2_5 - predicted_pm)
+
+error_summary_xgb_all_coms <- purpleair_model_data_xgb_all_coms %>%
+  group_by(community_id) %>%
+  summarize(rmse = sqrt(mean(error^2, na.rm = TRUE)),
+            mae = mean(abs(error), na.rm = TRUE),
+            rsq = cor(pm2_5, predicted_pm, use = "complete.obs")^2)
+
+# Barplot of RMSE by community
+ggplot(error_summary_xgb_all_coms, aes(x = reorder(community_id, rmse), y = rmse)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "XG Boost In-Sample RMSE by Community",
+       x = "Community",
+       y = "RMSE (µg/m³)") +
+  theme_minimal()
+```
+
+###  Evaluate Early Period Performance (Test Set, Pre-2023) 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Filter test set predictions to pre-2023
+early_test_results <- test_results_xgb_all_coms %>%
+  filter(date < as.Date("2023-01-01")) %>%
+  filter(!is.na(pm2_5), !is.na(predicted_pm))
+
+# Overall metrics
+early_period_eval_xgb_all_coms <- early_test_results %>%
+  metrics(truth = pm2_5, estimate = predicted_pm)
+
+head(early_period_eval_xgb_all_coms)
+
+## METRICS BY COMMUNITY
+
+# Plot observed vs. predicted
+ggplot(early_test_results, aes(x = pm2_5, y = predicted_pm)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  labs(title = "Observed vs. Predicted PM2.5 (Test Set, Pre-2023)",
+       x = "Observed PM2.5",
+       y = "Predicted PM2.5") +
+  theme_minimal()
+
+
+
+# Community-level metrics
+early_metrics_by_community <- early_test_results %>%
+  group_by(community_id) %>%
+  summarise(
+    rmse = sqrt(mean((pm2_5 - predicted_pm)^2, na.rm = TRUE)),
+    mae = mean(abs(pm2_5 - predicted_pm), na.rm = TRUE),
+    rsq = cor(pm2_5, predicted_pm, use = "complete.obs")^2,
+    n = n()
+  ) %>%
+  arrange(desc(n))
+
+# Plot RMSE by community
+ggplot(early_metrics_by_community, aes(x = reorder(community_id, rmse), y = rmse)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "RMSE by Community (Test Set, Pre-2023)",
+       x = "Community",
+       y = "RMSE (µg/m³)") +
+  theme_minimal()
+
+```
+
+
+## Full Dataset Imputation + Completeness Check
+
+While the model is being finalized, this helps us get a sense for how much imputation the model will be able to achieve. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+## create full grid of possible combinations of community and time stamp
+timestamps <- unique(purpleair_hourly$timestamp)
+communities <- unique(purpleair_hourly$community_id)
+
+full_grid <- expand_grid(timestamp = timestamps, community_id = communities)
+
+# Add predictors (weather/time vars, wide-format monitor data)
+imputation_data <- full_grid %>%
+  left_join(purpleair_hourly, by = c("timestamp", "community_id")) %>%
+  left_join(purpleair_wide, by = "timestamp") %>%
+  mutate(target_column = paste0("pm2_5_", community_id))
+
+# Prepare the full prediction dataset (repeat target-blanking step)
+pm_cols <- grep("^pm2_5_", names(imputation_data), value = TRUE)
+
+for (col in pm_cols) {
+  imputation_data[[col]] <- ifelse(
+    imputation_data$target_column == col,
+    NA_real_,
+    imputation_data[[col]]
+  )
+}
+
+# Train the model on all observed data
+final_model_xgb_all_coms <- fit(final_wf_xgb_all_coms, data = purpleair_model_data)
+
+# Apply your model to full data (using the same recipe)
+predicted_all <- predict(final_model_xgb_all_coms, new_data = imputation_data)
+
+# Add to dataframe
+prediction_data <- imputation_data %>%
+  bind_cols(predicted_all) %>%
+  rename(predicted_pm2_5 = .pred)
+
+# Use predicted value only where pm2_5 is NA
+prediction_data_filled <- prediction_data %>%
+  mutate(pm2_5_filled = if_else(is.na(pm2_5), predicted_pm2_5, pm2_5))
+
+
+
+## CHECK OUT COMPLETENESS OF PREDICTIONS
+prediction_completeness <- prediction_data_filled %>%
+  mutate(date = as.Date(timestamp)) %>%
+  group_by(community_id, date) %>%
+  summarise(n_obs = sum(!is.na(pm2_5_filled)), .groups = "drop") %>%
+  mutate(pct_complete = n_obs / 24)  # 24 hours expected per day
+
+# plot completeness after prediction
+ggplot(prediction_completeness, aes(x = date, y = community_id, fill = pct_complete)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(name = "Daily completeness", limits = c(0, 1)) +
+  labs(title = "Daily PM 2.5 Completeness After Imputation",
+       subtitle = "Based on predicted or observed values",
+       x = "Date", y = "Community") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+
+```
+
