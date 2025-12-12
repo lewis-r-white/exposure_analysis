@@ -125,6 +125,7 @@ for (file in rds_files) {
   # Normalize: if the RDS is a single data.frame, wrap it as a 1-element list
   if (is.data.frame(upas_list))
     upas_list <- list(upas_list)
+
   
   # Keep only non-empty data.frames and standardize columns safely
   keep_cols <- c(
@@ -308,7 +309,7 @@ soft_lo <- 0.95 * target_flow
 hard_lo <- 0.90 * target_flow
 soft_hi <- 1.05 * target_flow
 hard_hi <- 1.10 * target_flow
-agg_step <- "5 min"   # try "10 min" to speed up more
+agg_step <- "5 minutes"   # try "10 min" to speed up more
 
 # helper: numeric column or NA vector (avoids errors when col is missing)
 get_num <- function(d, col) {
