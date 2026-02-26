@@ -28,79 +28,144 @@ problem_files <- list()
 ### Read in all csv files for each community    ##
 ##################################################
 
-for(i in 1:length(purpleair)){
-  
-  filenames_purpleair <- list.files(path = paste0("/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/raw_data/",purpleair[i]),recursive = T, pattern = "*.csv", full.names = T) #list file path to directory containing PurpleAir files
-  
-  list.files <- list()
-  
-  colname_list <-c("UTCDateTime","mac_address","firmware_ver","hardware" ,"current_temp_f","current_humidity",   "current_dewpoint_f","pressure" ,"adc" ,"mem", "rssi","uptime","pm1_0_cf_1","pm2_5_cf_1","pm10_0_cf_1","pm1_0_atm","pm2_5_atm","pm10_0_atm" ,"pm2.5_aqi_cf_1", "pm2.5_aqi_atm" , "p_0_3_um","p_0_5_um","p_1_0_um","p_2_5_um","p_5_0_um","p_10_0_um" ,"pm1_0_cf_1_b","pm2_5_cf_1_b","pm10_0_cf_1_b", "pm1_0_atm_b" ,"pm2_5_atm_b" ,"pm10_0_atm_b","pm2.5_aqi_cf_1_b","pm2.5_aqi_atm_b" , "p_0_3_um_b","p_0_5_um_b","p_1_0_um_b","p_2_5_um_b"  ,"p_5_0_um_b" ,"p_10_0_um_b" ,"gas")
-  
-  for(j in 1:length(filenames_purpleair)){
-    
-    tryCatch({
-      
-      encoding <- guess_encoding(filenames_purpleair[j])
-      
-      rawfile <- read_csv(filenames_purpleair[j], col_names = colname_list ,show_col_types = FALSE, skip_empty_rows = T,locale = readr::locale(encoding = encoding$encoding), guess_max = 10000)[-1,]
-      
-      problems <- problems(rawfile)
-      bad_rows <- problems$row
-      
-      # Count the number of  problematic rows
-      
-      rawfile$badrows <- nrow(problems)
-      
-      
-      # Make sure that all columns, aside from the ones mentioned below, are converted to numeric
-      list.files[[j]] <- rawfile
-      list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")] <- lapply(list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")], as.numeric)
-      
-      list.files[[j]]$community <- tolower(str_extract(purpleair[i],"[^_]+"))
-      list.files[[j]]$filename <- filenames_purpleair[j]
-      files <- rbindlist(list.files, fill = TRUE)
-      
-      ## Create a second column for community to catch if for some reason, the first one didn't work and returns 'NA'
-      files$community_2 <- tolower(str_extract(purpleair[i],"[^_]+"))
-      files$vname <- ifelse(is.na(files$community), files$community_2, files$community)
-      files <- files %>% dplyr::select(-(c(community,community_2)))
-      
-    },
-    error =function(e){
-      
-      warning(paste0("Trying to read in ",filenames_purpleair[j]," using an alternative method."))
-      
-      filepath <- filenames_purpleair[j]
-      
-      encoding <- guess_encoding(filepath)
-      
-      rawfile <- read_csv(filepath, col_names = colname_list ,show_col_types = FALSE)[-1,]
-      
-      problems <- problems(rawfile)
-      bad_rows <- problems$row
-      
-      # Remove the problematic rows
-      
-      rawfile$badrows <- nrow(problems)
-      
-      list.files[[j]] <-  as.data.frame(lapply(rawfile, iconv, from = "ASCII" , to = "UTF8"))
-      
-      list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")] <- lapply(list.files[[j]][, names(list.files[[j]]) != c("UTCDateTime", "timestamp","mac_address", "hardware")], as.numeric)
-      list.files[[j]]$community <- tolower(str_extract(purpleair[i],"[^_]+"))
-      list.files[[j]]$filename <- filenames_purpleair[j]
-      files <- rbindlist(list.files, fill = TRUE)
-      
-      ## Create a second column for community to catch if for some reason, the first one didn't work and returns 'NA'
-      files$community_2 <- tolower(str_extract(purpleair[i],"[^_]+"))
-      files$vname <- ifelse(is.na(files$community), files$community_2, files$community)
-      files <- files %>% dplyr::select(-(c(community,community_2)))
-    }, finally={
-      next})
-  }         
-  
-  list.purpleair[[i]] <- files
-  
+# Load Dependencies
+library(data.table)
+library(dplyr)
+library(readr)
+library(stringr)
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+# Clean + parse numeric-ish character vectors:
+# - strip control characters (e.g., the "" bytes)
+# - treat common missing tokens as NA
+clean_num <- function(x) {
+  x <- as.character(x)
+  x <- stringr::str_replace_all(x, "[[:cntrl:]]", "")
+  readr::parse_number(x, na = c("", "NA", "NaN", "nan", "NULL", "null"))
 }
+
+# Read a PurpleAir CSV robustly (UTF-8 first, then Latin1)
+read_pa_csv <- function(path, colname_list, encoding = "UTF-8") {
+  df <- readr::read_csv(
+    path,
+    col_names = colname_list,
+    show_col_types = FALSE,
+    skip_empty_rows = TRUE,
+    locale = readr::locale(encoding = encoding),
+    guess_max = 10000
+  )
+  
+  # Drop first row ONLY if it looks like a repeated header row
+  if (nrow(df) > 0 && !is.na(df$UTCDateTime[1]) && df$UTCDateTime[1] == "UTCDateTime") {
+    df <- df[-1, ]
+  }
+  
+  df
+}
+
+# ----------------------------
+# Paths + setup
+# ----------------------------
+base_path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/raw_data"
+
+# list of PurpleAir community folders
+purpleair <- list.dirs(path = base_path, full.names = FALSE, recursive = FALSE)
+
+list.purpleair <- list()
+problem_files <- list()
+
+# Expected column names (as in your original script)
+colname_list <- c(
+  "UTCDateTime","mac_address","firmware_ver","hardware","current_temp_f","current_humidity",
+  "current_dewpoint_f","pressure","adc","mem","rssi","uptime","pm1_0_cf_1","pm2_5_cf_1","pm10_0_cf_1",
+  "pm1_0_atm","pm2_5_atm","pm10_0_atm","pm2.5_aqi_cf_1","pm2.5_aqi_atm","p_0_3_um","p_0_5_um","p_1_0_um",
+  "p_2_5_um","p_5_0_um","p_10_0_um","pm1_0_cf_1_b","pm2_5_cf_1_b","pm10_0_cf_1_b","pm1_0_atm_b",
+  "pm2_5_atm_b","pm10_0_atm_b","pm2.5_aqi_cf_1_b","pm2.5_aqi_atm_b","p_0_3_um_b","p_0_5_um_b","p_1_0_um_b",
+  "p_2_5_um_b","p_5_0_um_b","p_10_0_um_b","gas"
+)
+
+# Columns we do NOT want to coerce to numeric
+non_num_cols <- c("UTCDateTime", "timestamp", "mac_address", "hardware")
+
+# ----------------------------
+# Main loop
+# ----------------------------
+for (i in seq_along(purpleair)) {
+  
+  comm_folder <- purpleair[i]
+  comm_path <- file.path(base_path, comm_folder)
+  
+  filenames_purpleair <- list.files(
+    path = comm_path,
+    recursive = TRUE,
+    pattern = "\\.csv$",
+    full.names = TRUE
+  )
+  
+  # reset per-community holders
+  list.files <- list()
+  files <- NULL
+  
+  for (j in seq_along(filenames_purpleair)) {
+    
+    f <- filenames_purpleair[j]
+    
+    # Try UTF-8, fall back to Latin1
+    rawfile <- tryCatch(
+      read_pa_csv(f, colname_list, encoding = "UTF-8"),
+      error = function(e1) {
+        warning("UTF-8 read failed; trying Latin1: ", f)
+        read_pa_csv(f, colname_list, encoding = "Latin1")
+      }
+    )
+    
+    # Skip if empty after any cleaning
+    if (nrow(rawfile) == 0) {
+      warning("Skipping empty file (no data rows): ", f)
+      problem_files[[length(problem_files) + 1]] <- list(file = f, reason = "empty_after_read")
+      next
+    }
+    
+    # Track readr parsing problems from read_csv step (optional but kept)
+    prob <- readr::problems(rawfile)
+    rawfile$badrows <- nrow(prob)
+    
+    # Store
+    list.files[[j]] <- rawfile
+    
+    # Convert numeric columns (clean control chars + handle nan tokens)
+    num_cols <- setdiff(names(list.files[[j]]), non_num_cols)
+    list.files[[j]][, num_cols] <- lapply(list.files[[j]][, num_cols], clean_num)
+    
+    # Add identifiers
+    list.files[[j]]$community <- tolower(stringr::str_extract(comm_folder, "[^_]+"))
+    list.files[[j]]$filename  <- f
+    
+    # Bind incrementally
+    files <- data.table::rbindlist(list.files, fill = TRUE)
+    
+    # Community backup + vname
+    files$community_2 <- tolower(stringr::str_extract(comm_folder, "[^_]+"))
+    files$vname <- ifelse(is.na(files$community), files$community_2, files$community)
+    files <- files %>% dplyr::select(-(c(community, community_2)))
+  }
+  
+  if (is.null(files)) {
+    warning("No usable files for community: ", comm_folder)
+    list.purpleair[[i]] <- data.table::data.table()
+  } else {
+    list.purpleair[[i]] <- files
+  }
+}
+
+# Optional quick sanity checks:
+# length(list.purpleair)
+# sapply(list.purpleair, nrow)
+# head(list.purpleair[[1]])
+
 
 
 ## Combine into one dataframe
@@ -183,7 +248,7 @@ purpleair_latest24$perdiff <- ifelse(is.infinite(purpleair_latest24$perdiff), NA
 
 ## Version 2 - Final PM2.5 based on average between the two sensors if below 20% if over 100ug/m3
 purpleair_latest24$pm2_5_atm_final <- ifelse(purpleair_latest24$pm2_5_atm_a <= 100 & purpleair_latest24$pm2_5_atm_b_ <= 100 & purpleair_latest24$diff < 11, (purpleair_latest24$pm2_5_atm_a + purpleair_latest24$pm2_5_atm_b_)/2,
-                                                 ifelse(purpleair_latest24$pm2_5_atm_a > 100 & purpleair_latest24$pm2_5_atm_b_ > 100 & purpleair_latest24$perdiff < 0.21, (purpleair_latest24$pm2_5_atm_a + purpleair_latest24$pm2_5_atm_b_)/2, NA))
+                                             ifelse(purpleair_latest24$pm2_5_atm_a > 100 & purpleair_latest24$pm2_5_atm_b_ > 100 & purpleair_latest24$perdiff < 0.21, (purpleair_latest24$pm2_5_atm_a + purpleair_latest24$pm2_5_atm_b_)/2, NA))
 
 
 
@@ -216,7 +281,7 @@ saveRDS(purpleair_latest24, file.path(out_dir, paste0("purpleair_latest24_", Sys
 # write_csv(purpleair_latest24, file.path(out_dir, paste0("purpleair_latest24_", Sys.Date(), ".csv")))
 
 # save removed rows
-saveRDS(purpleair_rejects, file.path(out_dir, paste0("purpleair_rejects_", Sys.Date(), ".rds")))
+saveRDS(purpleair_rejects, file.path(out_dir, paste0("purpleair_rejects_",Sys.Date(), ".rds")))
 
 
 

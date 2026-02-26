@@ -55,15 +55,15 @@ A color-coded `.xlsx` for QC review
 ```{r,echo = FALSE}
 
 ##Import raw UPAS files. This should be folder containing the txt files. 
-path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/ASANTEKWAA UPAS DATA_20251206"
+path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/upas_data2025/weekly_report_data/SURONUASE UPAS DATA_30012026"
 
 file_upas <- list.files(path, pattern = "*.txt", full.names = F,recursive = TRUE)
 
 length(file_upas) # check to make sure data is there
 
 # specify meta data (pull this from file name)
-date = "20251206"
-community = "asantekwaa"
+date = "20260103"
+community = "soronuase"
 ```
 
 
@@ -221,7 +221,6 @@ derive_seg_sec <- function(ts_posix, pmsi = NA) {
 # #   
 # #   return(data)
 # # }
-
 
 ```
 
@@ -589,13 +588,14 @@ for(i in 1:length(file_upas)){
       community =  tolower(str_extract(dirname(file_upas)[i], "[^_]+")), 
       file = file_upas[i],
       
-      
+      ## SULE start ------------
       timestamp = DateTimeLocal,
       
-      ## SULE commenting out lines below because changed how we clean the datetim above. 
+      ##  commenting out lines below because changed how we clean the datetim above. 
       # timestamp = as.POSIXct(DateTimeLocal, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
       # timestamp = as.POSIXct(ifelse(is.na(timestamp),as.POSIXct(DateTimeLocal, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),timestamp), format = "%Y-%m-%d %H:%M:%S", tz = "UTC") ,
-      # SULE
+      # SULE end ------------
+      
       elapsed_time = difftime(timestamp, lag(timestamp), units="secs")) 
     
     
@@ -612,12 +612,13 @@ for(i in 1:length(file_upas)){
       community = tolower(str_extract(dirname(file_upas)[i], "[^_]+")), #NA, 
       file = file_upas[i],
       
+      # SULE start ------------
       timestamp = DateTimeLocal,
       
-      ## SULE commenting out lines below because changed how we clean the datetim above. 
+      ##  commenting out lines below because changed how we clean the datetim above. 
       # timestamp = as.POSIXct(DateTimeLocal, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
       # timestamp = as.POSIXct(ifelse(is.na(timestamp),as.POSIXct(DateTimeLocal, format = "%Y-%m-%dT%H:%M:%S", tz = "UTC"),timestamp), format = "%Y-%m-%d %H:%M:%S", tz = "UTC") ,
-      # SULE
+      # SULE end ------------
       
       elapsed_time = difftime(timestamp, lag(timestamp), units="secs")) 
     
@@ -725,7 +726,7 @@ pm_summary_upas <- data.frame(
   filter_id = rep(NA, length(list.upasr3_new)),
   community =  rep(NA, length(list.upasr3_new)),
   
-  ## SULE
+  ## SULE start ------------
   
   start_time = as.POSIXct(rep(NA, length(list.upasr3_new)), origin = "1970-01-01", tz = "UTC"),
   end_time   = as.POSIXct(rep(NA, length(list.upasr3_new)), origin = "1970-01-01", tz = "UTC"),
@@ -733,7 +734,7 @@ pm_summary_upas <- data.frame(
   # start_time = rep(NA, length(list.upasr3_new)),
   # end_time = rep(NA, length(list.upasr3_new)),
   
-  ## SULE
+  ## SULE end ------------
   
   run_time_hour = rep(NA, length(list.upasr3_new)),
   # run_time_hour_comp = rep(NA, length(list.upasr3_new)),
@@ -824,14 +825,14 @@ is_night <- function(t) !is_day(t)
 for (i in 1:length(list.upasr3_new)) {
   tryCatch({
     ## get date info
-    ## SULE commenting out because already formatted
+    ## SULE start ------------
+    ## commenting out because already formatted
     # list.upasr3_new[[i]]$DateTimeLocal <- as.POSIXct(list.upasr3_new[[i]]$DateTimeLocal, format = "%Y-%m-%dT%H:%M:%S")
-    ## SULE 
     
     list.upasr3_new[[i]]$hour = lubridate::hour(list.upasr3_new[[i]]$DateTimeLocal)
     
     # ensure chronological
-    # SULE
+    
     # commenting out below because ordering lead to NAs at end which broke end_time column
     # list.upasr3_new[[i]] <- list.upasr3_new[[i]][order(list.upasr3_new[[i]]$DateTimeLocal), ]
     
@@ -842,7 +843,7 @@ for (i in 1:length(list.upasr3_new)) {
     df <- df[order(df$DateTimeLocal), ]
     
     list.upasr3_new[[i]] <- df
-    # SULE 
+    # SULE end ------------
 
 
     # pull key header data ----
@@ -897,8 +898,8 @@ for (i in 1:length(list.upasr3_new)) {
   pm_summary_upas$filter_id[i] <- list.upasr3_new[[i]]$filter_id[1]
   pm_summary_upas$community[i] <- list.upasr3_new[[i]]$community[1]
   
-  # SULE
-  
+  # SULE start ------------------------
+
   pm_summary_upas$start_time[i] <- df$DateTimeLocal[1]
   pm_summary_upas$end_time[i]   <- df$DateTimeLocal[nrow(df)]
 
@@ -909,7 +910,7 @@ for (i in 1:length(list.upasr3_new)) {
   # commenting out bc calc end time differently now
   # pm_summary_upas$end_time[i] <-  list.upasr3_new[[i]]$DateTimeLocal[nrow(list.upasr3_new[[i]])] 
   
-  # SULE
+  # SULE end ------------------------
   
   #as.Date(list.upasr3_new[[i]]$DateTimeLocal[nrow(list.upasr3_new[[i]])])
   pm_summary_upas$run_time_hour[i] <-  unique(as.numeric(list.upasr3_new[[i]]$OverallDuration))

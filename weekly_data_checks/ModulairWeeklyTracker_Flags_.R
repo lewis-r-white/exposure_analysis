@@ -162,3 +162,28 @@ write_csv(summary_mod_, here::here("weekly_data_checks", "modulair_check_outputs
 
 
 
+exposure <- read_csv("/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/modulair_check_outputs/modulair_flag_percent_2026-02-04.csv")
+
+cal <- read_csv("/Users/lewiswhite/CHAP_columbia/QuantAQ_ghana/data/calibration/calibration_pm25_20251216.csv")
+
+full <- left_join(exposure, cal) %>%
+  filter(method == "fleet_avg") 
+
+initial_fleet <- full %>% filter(colocation_start < as.Date("2024-01-01"))
+new_fleet <- full %>% filter(colocation_start > as.Date("2024-01-01"))
+
+best_initial <- initial_fleet %>%
+  filter(count_opc_per < 20,
+         total_pmreading_percent > 70,
+         slope <1.1, slope>0.9) %>%
+  select(monitor, count_opc_per, count_overheat_per, total_pmreading_percent, pollutant:rmse)
+
+best_new <- new_fleet %>%
+  filter(count_opc_per < 20,
+         total_pmreading_percent > 30) %>%
+  select(monitor, count_opc_per, count_overheat_per, total_pmreading_percent, pollutant:rmse)
+
+
+write_csv(best_initial, "/Users/lewiswhite/Downloads/initial_fleet_options.csv")
+
+write_csv(best_new, "/Users/lewiswhite/Downloads/new_fleet_options.csv")
