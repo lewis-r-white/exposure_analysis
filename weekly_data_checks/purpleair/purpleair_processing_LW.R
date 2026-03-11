@@ -4,35 +4,19 @@
 
 
 # Load Dependencies
-
+library(tidyverse)
 library(data.table)
-library(dplyr)
 library(xts)
 library(dygraphs)
-library(readr) #for read_csv function
 library(ggpubr)
-library(readr)
 library(magrittr)
-library(purrr)
-library(stringr)
-
-
-##Read in PurpleAir Files for All Communities
-purpleair <- list.dirs(path = "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/raw_data", full.names = FALSE, recursive = FALSE) #list to director containing PurpleAir Folders
-
-
-list.purpleair <- list()
-problem_files <- list()
 
 ##################################################
 ### Read in all csv files for each community    ##
 ##################################################
 
 # Load Dependencies
-library(data.table)
-library(dplyr)
-library(readr)
-library(stringr)
+
 
 # ----------------------------
 # Helpers
@@ -69,7 +53,7 @@ read_pa_csv <- function(path, colname_list, encoding = "UTF-8") {
 # ----------------------------
 # Paths + setup
 # ----------------------------
-base_path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/raw_data"
+base_path <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/weekly_report_data"
 
 # list of PurpleAir community folders
 purpleair <- list.dirs(path = base_path, full.names = FALSE, recursive = FALSE)
@@ -106,7 +90,7 @@ for (i in seq_along(purpleair)) {
   )
   
   # reset per-community holders
-  list.files <- list()
+  community_files_list <- list()
   files <- NULL
   
   for (j in seq_along(filenames_purpleair)) {
@@ -131,21 +115,21 @@ for (i in seq_along(purpleair)) {
     
     # Track readr parsing problems from read_csv step (optional but kept)
     prob <- readr::problems(rawfile)
-    rawfile$badrows <- nrow(prob)
+    rawfile$file_parse_problem_n <- nrow(prob)
     
     # Store
-    list.files[[j]] <- rawfile
+    community_files_list[[j]] <- rawfile
     
     # Convert numeric columns (clean control chars + handle nan tokens)
-    num_cols <- setdiff(names(list.files[[j]]), non_num_cols)
-    list.files[[j]][, num_cols] <- lapply(list.files[[j]][, num_cols], clean_num)
+    num_cols <- setdiff(names(community_files_list[[j]]), non_num_cols)
+    community_files_list[[j]][, num_cols] <- lapply(community_files_list[[j]][, num_cols], clean_num)
     
     # Add identifiers
-    list.files[[j]]$community <- tolower(stringr::str_extract(comm_folder, "[^_]+"))
-    list.files[[j]]$filename  <- f
+    community_files_list[[j]]$community <- tolower(stringr::str_extract(comm_folder, "[^_]+"))
+    community_files_list[[j]]$filename  <- f
     
     # Bind incrementally
-    files <- data.table::rbindlist(list.files, fill = TRUE)
+    files <- data.table::rbindlist(community_files_list, fill = TRUE)
     
     # Community backup + vname
     files$community_2 <- tolower(stringr::str_extract(comm_folder, "[^_]+"))
@@ -170,85 +154,85 @@ for (i in seq_along(purpleair)) {
 
 ## Combine into one dataframe
 
-purpleair_latest24 <- rbindlist(list.purpleair)
+purpleair_processed <- rbindlist(list.purpleair, fill = TRUE)
 
 #################################
 ####   Data Processing       ####
 #################################
 
 # fix issue dates
-ok_dt <- grepl("^\\d{4}/\\d{2}/\\d{2}T\\d{2}:\\d{2}:\\d{2}[zZ]$", purpleair_latest24$UTCDateTime) |
-  grepl("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",  purpleair_latest24$UTCDateTime)
+ok_dt <- grepl("^\\d{4}/\\d{2}/\\d{2}T\\d{2}:\\d{2}:\\d{2}[zZ]$", purpleair_processed$UTCDateTime) |
+  grepl("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",  purpleair_processed$UTCDateTime)
 
-purpleair_rejects <- purpleair_latest24[!ok_dt]
-purpleair_latest24 <- purpleair_latest24[ok_dt]
+purpleair_rejects <- purpleair_processed[!ok_dt]
+purpleair_processed <- purpleair_processed[ok_dt]
 
 # Parse timestamps for both common formats
-purpleair_latest24$timestamp <- as.POSIXct(NA)
+purpleair_processed$timestamp <- as.POSIXct(NA)
 
-idx_slash <- grepl("^\\d{4}/\\d{2}/\\d{2}T\\d{2}:\\d{2}:\\d{2}[zZ]$", purpleair_latest24$UTCDateTime)
-purpleair_latest24$timestamp[idx_slash] <- as.POSIXct(
-  purpleair_latest24$UTCDateTime[idx_slash],
+idx_slash <- grepl("^\\d{4}/\\d{2}/\\d{2}T\\d{2}:\\d{2}:\\d{2}[zZ]$", purpleair_processed$UTCDateTime)
+purpleair_processed$timestamp[idx_slash] <- as.POSIXct(
+  purpleair_processed$UTCDateTime[idx_slash],
   format = "%Y/%m/%dT%H:%M:%Sz",
   tz = "UTC"
 )
 
-idx_dash <- grepl("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$", purpleair_latest24$UTCDateTime)
-purpleair_latest24$timestamp[idx_dash] <- as.POSIXct(
-  purpleair_latest24$UTCDateTime[idx_dash],
+idx_dash <- grepl("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$", purpleair_processed$UTCDateTime)
+purpleair_processed$timestamp[idx_dash] <- as.POSIXct(
+  purpleair_processed$UTCDateTime[idx_dash],
   format = "%Y-%m-%dT%H:%M:%SZ",
   tz = "UTC"
 )
 
 # correct date if it doesn't match filename date (only when filename is YYYYMMDD.csv)
-purpleair_latest24$date_filename <- as.Date(sub(".*/(\\d{8})\\.csv$", "\\1", purpleair_latest24$filename), format = "%Y%m%d")
-purpleair_latest24$timestamp_date <- as.Date(purpleair_latest24$timestamp)
-purpleair_latest24$timestamp_time <- format(purpleair_latest24$timestamp, "%H:%M:%S")
+purpleair_processed$date_filename <- as.Date(sub(".*/(\\d{8})\\.csv$", "\\1", purpleair_processed$filename), format = "%Y%m%d")
+purpleair_processed$timestamp_date <- as.Date(purpleair_processed$timestamp)
+purpleair_processed$timestamp_time <- format(purpleair_processed$timestamp, "%H:%M:%S")
 
-needs_fix <- !is.na(purpleair_latest24$date_filename) &
-  !is.na(purpleair_latest24$timestamp) &
-  purpleair_latest24$timestamp_date != purpleair_latest24$date_filename
+needs_fix <- !is.na(purpleair_processed$date_filename) &
+  !is.na(purpleair_processed$timestamp) &
+  purpleair_processed$timestamp_date != purpleair_processed$date_filename
 
-purpleair_latest24$timestamp[needs_fix] <- as.POSIXct(
-  paste(purpleair_latest24$date_filename[needs_fix], purpleair_latest24$timestamp_time[needs_fix]),
+purpleair_processed$timestamp[needs_fix] <- as.POSIXct(
+  paste(purpleair_processed$date_filename[needs_fix], purpleair_processed$timestamp_time[needs_fix]),
   format = "%Y-%m-%d %H:%M:%S",
   tz = "UTC"
 )
 
 # cleanup helper cols if you want
-purpleair_latest24$date_filename <- NULL
-purpleair_latest24$timestamp_date <- NULL
-purpleair_latest24$timestamp_time <- NULL
+purpleair_processed$date_filename <- NULL
+purpleair_processed$timestamp_date <- NULL
+purpleair_processed$timestamp_time <- NULL
 
 
 
 #Convert temperature to Celsius
-purpleair_latest24$tempc <- (purpleair_latest24$current_temp_f - 32) * (5/9) 
+purpleair_processed$tempc <- (purpleair_processed$current_temp_f - 32) * (5/9) 
 
 
 
 
 ##Maximum Standard Range : >= 1,000 ug/m3 - Set These to Missing?(https://www2.purpleair.com/products/purpleair-pa-ii)
 ##Effective Range Set to 0 - 500ug/m3 (Limit to this?)
-purpleair_latest24 $pm2_5_atm_a <- ifelse(purpleair_latest24$pm2_5_atm > 1000 , NA, purpleair_latest24$pm2_5_atm)
+purpleair_processed$pm2_5_atm_a <- ifelse(purpleair_processed$pm2_5_atm > 1000 , NA, purpleair_processed$pm2_5_atm)
 
-purpleair_latest24$pm2_5_atm_b_ <- ifelse(purpleair_latest24$pm2_5_atm_b > 1000 , NA, purpleair_latest24$pm2_5_atm_b)
+purpleair_processed$pm2_5_atm_b_ <- ifelse(purpleair_processed$pm2_5_atm_b > 1000 , NA, purpleair_processed$pm2_5_atm_b)
 
 
 
 ## Compute difference and percent difference
-purpleair_latest24$perdiff <- abs(purpleair_latest24$pm2_5_atm_a - purpleair_latest24$pm2_5_atm_b_)/purpleair_latest24$pm2_5_atm_a 
+purpleair_processed$perdiff <- abs(purpleair_processed$pm2_5_atm_a - purpleair_processed$pm2_5_atm_b_)/purpleair_processed$pm2_5_atm_a 
 
-purpleair_latest24$diff <- abs(purpleair_latest24$pm2_5_atm_a - purpleair_latest24$pm2_5_atm_b_)
+purpleair_processed$diff <- abs(purpleair_processed$pm2_5_atm_a - purpleair_processed$pm2_5_atm_b_)
 
 
 #Some sensors have a value of 0 causing the percent difference to be 0 so this is set to NA
-purpleair_latest24$perdiff <- ifelse(is.infinite(purpleair_latest24$perdiff), NA, purpleair_latest24$perdiff)
+purpleair_processed$perdiff <- ifelse(is.infinite(purpleair_processed$perdiff), NA, purpleair_processed$perdiff)
 
 
 ## Version 2 - Final PM2.5 based on average between the two sensors if below 20% if over 100ug/m3
-purpleair_latest24$pm2_5_atm_final <- ifelse(purpleair_latest24$pm2_5_atm_a <= 100 & purpleair_latest24$pm2_5_atm_b_ <= 100 & purpleair_latest24$diff < 11, (purpleair_latest24$pm2_5_atm_a + purpleair_latest24$pm2_5_atm_b_)/2,
-                                             ifelse(purpleair_latest24$pm2_5_atm_a > 100 & purpleair_latest24$pm2_5_atm_b_ > 100 & purpleair_latest24$perdiff < 0.21, (purpleair_latest24$pm2_5_atm_a + purpleair_latest24$pm2_5_atm_b_)/2, NA))
+purpleair_processed$pm2_5_atm_final <- ifelse(purpleair_processed$pm2_5_atm_a <= 100 & purpleair_processed$pm2_5_atm_b_ <= 100 & purpleair_processed$diff < 11, (purpleair_processed$pm2_5_atm_a + purpleair_processed$pm2_5_atm_b_)/2,
+                                             ifelse(purpleair_processed$pm2_5_atm_a > 100 & purpleair_processed$pm2_5_atm_b_ > 100 & purpleair_processed$perdiff < 0.21, (purpleair_processed$pm2_5_atm_a + purpleair_processed$pm2_5_atm_b_)/2, NA))
 
 
 
@@ -257,33 +241,37 @@ purpleair_latest24$pm2_5_atm_final <- ifelse(purpleair_latest24$pm2_5_atm_a <= 1
 ################################################################
 
 ## If temperature is above 120F or Equal to 0, set to NA
-summary(purpleair_latest24$current_temp_f)
+summary(purpleair_processed$current_temp_f)
 
-purpleair_latest24$tempf_updated <- ifelse(purpleair_latest24$current_temp_f > 120 | purpleair_latest24$current_temp_f == 0 , NA, purpleair_latest24$current_temp_f )
+purpleair_processed$tempf_updated <- ifelse(purpleair_processed$current_temp_f > 120 | purpleair_processed$current_temp_f == 0 , NA, purpleair_processed$current_temp_f )
 
 
 ## If relative humidity is above 98 or equal to 0 , set to NA
 
-summary(purpleair_latest24$current_humidity)
+summary(purpleair_processed$current_humidity)
 
-purpleair_latest24$current_humidity <- ifelse(purpleair_latest24$current_humidity >= 98 | purpleair_latest24$current_humidity == 0 , NA,purpleair_latest24$current_humidity )
+purpleair_processed$rh_updated <- ifelse(purpleair_processed$current_humidity >= 98 | purpleair_processed$current_humidity == 0 , NA,purpleair_processed$current_humidity )
 
-
+purpleair_processed <- purpleair_processed %>%
+  arrange(vname, timestamp)
 
 
 
 ## SAVE OUTPUT -----
 
-out_dir <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed_data"
+out_dir <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-saveRDS(purpleair_latest24, file.path(out_dir, paste0("purpleair_latest24_", Sys.Date(), ".rds")))
-# write_csv(purpleair_latest24, file.path(out_dir, paste0("purpleair_latest24_", Sys.Date(), ".csv")))
+
+saveRDS(purpleair_processed, file.path(out_dir, paste0("purpleair_processed_", Sys.Date(), ".rds")))
+# write_csv(purpleair_processed, file.path(out_dir, paste0("purpleair_processed_", Sys.Date(), ".csv")))
 
 # save removed rows
 saveRDS(purpleair_rejects, file.path(out_dir, paste0("purpleair_rejects_",Sys.Date(), ".rds")))
 
-
+# save problem files 
+problem_files_df <- dplyr::bind_rows(problem_files)
+saveRDS(problem_files_df, file.path(out_dir, paste0("purpleair_problem_files_", Sys.Date(), ".rds")))
 
 
 ##############################################
@@ -298,46 +286,46 @@ saveRDS(purpleair_rejects, file.path(out_dir, paste0("purpleair_rejects_",Sys.Da
 
 # 
 # 
-# purpleair_latest24_subset <- purpleair_latest24[grepl(pattern ="^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}z$",purpleair_latest24$UTCDateTime)|grepl(pattern ="^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",purpleair_latest24$UTCDateTime)|grepl(pattern ="^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",purpleair_latest24$UTCDateTime),]
+# purpleair_processed_subset <- purpleair_processed[grepl(pattern ="^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}z$",purpleair_processed$UTCDateTime)|grepl(pattern ="^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",purpleair_processed$UTCDateTime)|grepl(pattern ="^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",purpleair_processed$UTCDateTime),]
 # 
 # 
 # 
 # ## Convert UTCDateTime to POSIXct datetime
 # 
-# purpleair_latest24_subset$timestamp <- as.POSIXct(purpleair_latest24_subset$UTCDateTime, format= "%Y/%m/%dT%H:%M:%Sz", tz="UTC")
+# purpleair_processed_subset$timestamp <- as.POSIXct(purpleair_processed_subset$UTCDateTime, format= "%Y/%m/%dT%H:%M:%Sz", tz="UTC")
 # 
 # ##Correct for datetimes (correct dates if they don't match the csv file)
-# purpleair_latest24_subset$date_filename <-  as.Date(sub(".*/(.*)\\.csv", "\\1", purpleair_latest24_subset$filename), format = "%Y%m%d")
-# purpleair_latest24_subset$timestamp_date <- as.Date(purpleair_latest24_subset$timestamp)
-# purpleair_latest24_subset$timestamp_time <- format(purpleair_latest24_subset$timestamp, format = "%H:%M:%S")
+# purpleair_processed_subset$date_filename <-  as.Date(sub(".*/(.*)\\.csv", "\\1", purpleair_processed_subset$filename), format = "%Y%m%d")
+# purpleair_processed_subset$timestamp_date <- as.Date(purpleair_processed_subset$timestamp)
+# purpleair_processed_subset$timestamp_time <- format(purpleair_processed_subset$timestamp, format = "%H:%M:%S")
 # 
 # 
 # ##Paste dates together if dates don't match
-# purpleair_latest24_subset$corrected_timestamp <- as.POSIXct(ifelse(purpleair_latest24_subset$timestamp_date == purpleair_latest24_subset$date_filename, purpleair_latest24_subset$timestamp, as.POSIXct(paste0(purpleair_latest24_subset$date_filename," ", purpleair_latest24_subset$timestamp_time), format = "%Y-%m-%d %H:%M:%S", tz= "GMT")), tz = "GMT")
+# purpleair_processed_subset$corrected_timestamp <- as.POSIXct(ifelse(purpleair_processed_subset$timestamp_date == purpleair_processed_subset$date_filename, purpleair_processed_subset$timestamp, as.POSIXct(paste0(purpleair_processed_subset$date_filename," ", purpleair_processed_subset$timestamp_time), format = "%Y-%m-%d %H:%M:%S", tz= "GMT")), tz = "GMT")
 # 
 # ##Subset Time that didn't match pattern
 # 
-# purpleair_latest24_mismatchtime<- purpleair_latest24[!grepl(pattern =c("^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}z$","^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"), purpleair_latest24$UTCDateTime),]
+# purpleair_processed_mismatchtime<- purpleair_processed[!grepl(pattern =c("^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}z$","^[0-9]{4}/[0-9]{2}/[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"), purpleair_processed$UTCDateTime),]
 # 
 # # unique(purpleair_oct24_mismatchtime$vname)
 # 
 # #Subset mismatch times (Times originally in the mismatch time dataframe but have an acceptable datetime foramt)
-# purpleair_latest24_mismatchtime_correct <- subset(purpleair_latest24_mismatchtime, subset = grepl(pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", purpleair_oct24_mismatchtime$UTCDateTime))
+# purpleair_processed_mismatchtime_correct <- subset(purpleair_processed_mismatchtime, subset = grepl(pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", purpleair_oct24_mismatchtime$UTCDateTime))
 # 
-# purpleair_latest24_mismatchtime_correct$timestamp <- as.POSIXct(purpleair_latest24_mismatchtime_correct$UTCDateTime, format= "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
+# purpleair_processed_mismatchtime_correct$timestamp <- as.POSIXct(purpleair_processed_mismatchtime_correct$UTCDateTime, format= "%Y-%m-%dT%H:%M:%SZ", tz="UTC")
 # 
 # 
 # ##Correct for datetimes (loop through and correct dates if they don't match the csv file)
-# purpleair_latest24_mismatchtime_correct$date_filename <-  as.Date(sub(".*/(.*)\\.csv", "\\1", purpleair_latest24_mismatchtime_correct$filename), format = "%Y%m%d")
-# purpleair_latest24_mismatchtime_correct$timestamp_date <- as.Date(purpleair_latest24_mismatchtime_correct$timestamp)
-# purpleair_latest24_mismatchtime_correct$timestamp_time <- format(purpleair_latest24_mismatchtime_correct$timestamp, format = "%H:%M:%S")
+# purpleair_processed_mismatchtime_correct$date_filename <-  as.Date(sub(".*/(.*)\\.csv", "\\1", purpleair_processed_mismatchtime_correct$filename), format = "%Y%m%d")
+# purpleair_processed_mismatchtime_correct$timestamp_date <- as.Date(purpleair_processed_mismatchtime_correct$timestamp)
+# purpleair_processed_mismatchtime_correct$timestamp_time <- format(purpleair_processed_mismatchtime_correct$timestamp, format = "%H:%M:%S")
 # 
 # ##Paste dates together if dates don't match
-# purpleair_latest24_mismatchtime_correct$corrected_timestamp <- as.POSIXct(ifelse(purpleair_latest24_mismatchtime_correct$timestamp_date == purpleair_latest24_mismatchtime_correct$date_filename, purpleair_latest24_mismatchtime_correct$timestamp, as.POSIXct(paste0(purpleair_latest24_mismatchtime_correct$date_filename," ",purpleair_latest24_mismatchtime_correct$timestamp_time), format = "%Y-%m-%d %H:%M:%S", tz= "GMT")), tz = "GMT")
+# purpleair_processed_mismatchtime_correct$corrected_timestamp <- as.POSIXct(ifelse(purpleair_processed_mismatchtime_correct$timestamp_date == purpleair_processed_mismatchtime_correct$date_filename, purpleair_processed_mismatchtime_correct$timestamp, as.POSIXct(paste0(purpleair_processed_mismatchtime_correct$date_filename," ",purpleair_processed_mismatchtime_correct$timestamp_time), format = "%Y-%m-%d %H:%M:%S", tz= "GMT")), tz = "GMT")
 # 
 # 
 # ## Bind rows of corrected timestamps
-# purpleair_latest24_v2 <- bind_rows(purpleair_latest24_subset,purpleair_latest24_mismatchtime_correct)
+# purpleair_processed_v2 <- bind_rows(purpleair_processed_subset,purpleair_processed_mismatchtime_correct)
 # 
 # 
 # 
@@ -348,7 +336,7 @@ saveRDS(purpleair_rejects, file.path(out_dir, paste0("purpleair_rejects_",Sys.Da
 # #################################################################
 # 
 # #Times that didn't match any of the patterns above
-# purpleair_latest24_v2_mismatchtime2 <- subset(purpleair_latest24_mismatchtime , subset = !grepl(pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", purpleair_latest24_mismatchtime$UTCDateTime))
+# purpleair_processed_v2_mismatchtime2 <- subset(purpleair_processed_mismatchtime , subset = !grepl(pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", purpleair_processed_mismatchtime$UTCDateTime))
 # 
 # ##Re-read in these files if some seem to be offset by 1 column
 # 

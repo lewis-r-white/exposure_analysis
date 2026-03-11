@@ -1,8 +1,14 @@
 ---
 title: "PurpleAir_QC"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_float: true
 date: "`r Sys.Date()`"
-output: html_document
 ---
+
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -16,196 +22,142 @@ library(lubridate)
 library(forcats)
 library(scales)
 ```
-    
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-# file paths to data
-path_new <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed_data/purpleair_latest24_2026-02-19.rds"
-
-# Historical cleaned dataset 
-path_hist <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed_data/purpleair_latest24_2026-01-01.rds"
 
 
-## LOAD DATA
-new_raw  <- readRDS(path_new)
-hist_raw <- readRDS(path_hist)
-```
+```{r, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+### LOAD DATA
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-# Standardize new batch
-new_std <- new_raw %>%
-  transmute(
-    community_id     = vname,                       # align naming
-    timestamp        = as.POSIXct(timestamp, tz="UTC"),
-    pm2_5_atm_a_     = pm2_5_atm_a,                 # keep if present
-    pm2_5_atm_b_     = pm2_5_atm_b_,                # keep if present
-    perdiff          = perdiff,
-    diff             = diff,
-    pm2_5_atm_final  = pm2_5_atm_final,
-    current_temp_f   = current_temp_f,
-    current_humidity = current_humidity,
-    current_dewpoint_f = current_dewpoint_f
-  )
+# file paths
+path_full <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/appended_full_data/purpleair_appended_full.rds"
+path_new  <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed/purpleair_processed_2026-03-10.rds"
 
-# Standardize previous batch (wont be necessary in future)
-hist_std <- hist_raw %>%
-  transmute(
-    community_id     = vname,                       # align naming
-    timestamp        = as.POSIXct(timestamp, tz="UTC"),
-    pm2_5_atm_a_     = pm2_5_atm_a,                 # keep if present
-    pm2_5_atm_b_     = pm2_5_atm_b_,                # keep if present
-    perdiff          = perdiff,
-    diff             = diff,
-    pm2_5_atm_final  = pm2_5_atm_final,
-    current_temp_f   = current_temp_f,
-    current_humidity = current_humidity,
-    current_dewpoint_f = current_dewpoint_f
-  )
-```
+# load data
+purpleair_full <- readRDS(path_full)
+purpleair_new  <- readRDS(path_new)
 
+# create community_id if needed
+if (!"community_id" %in% names(purpleair_full) && "vname" %in% names(purpleair_full)) {
+  purpleair_full$community_id <- purpleair_full$vname
+}
+if (!"community_id" %in% names(purpleair_new) && "vname" %in% names(purpleair_new)) {
+  purpleair_new$community_id <- purpleair_new$vname
+}
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-# ----------------------------
-# Append + de-dup
-# ----------------------------
-purpleair_todate <- bind_rows(hist_std, new_std) %>%
-  filter(!is.na(community_id), !is.na(timestamp)) %>%
+# ensure timestamp is POSIXct
+purpleair_full$timestamp <- as.POSIXct(purpleair_full$timestamp, tz = "UTC")
+purpleair_new$timestamp  <- as.POSIXct(purpleair_new$timestamp, tz = "UTC")
+
+# normalize A/B sensor names if needed
+normalize_ab_cols <- function(df) {
+  if (!"pm2_5_atm_a_" %in% names(df) && "pm2_5_atm_a" %in% names(df)) {
+    df$pm2_5_atm_a_ <- df$pm2_5_atm_a
+  }
+  if (!"pm2_5_atm_b_" %in% names(df) && "pm2_5_atm_b" %in% names(df)) {
+    df$pm2_5_atm_b_ <- df$pm2_5_atm_b
+  }
+  if (!"diff" %in% names(df) && all(c("pm2_5_atm_a_","pm2_5_atm_b_") %in% names(df))) {
+    df$diff <- abs(df$pm2_5_atm_a_ - df$pm2_5_atm_b_)
+  }
+  if (!"perdiff" %in% names(df) && all(c("pm2_5_atm_a_","pm2_5_atm_b_") %in% names(df))) {
+    df$perdiff <- abs(df$pm2_5_atm_a_ - df$pm2_5_atm_b_) / df$pm2_5_atm_a_
+    df$perdiff <- ifelse(is.infinite(df$perdiff), NA, df$perdiff)
+  }
+  df
+}
+
+purpleair_full <- normalize_ab_cols(purpleair_full)
+purpleair_new  <- normalize_ab_cols(purpleair_new)
+
+# filter out implausibly old timestamps for reporting only
+purpleair_full_qc <- purpleair_full %>%
+  filter(timestamp >= as.POSIXct("2024-01-01 00:00:00", tz = "UTC")) %>%
   distinct(community_id, timestamp, .keep_all = TRUE)
 
-# Optional: save an updated “master” file so you don’t keep re-appending in the Rmd
-# out_master <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/processed_data/purpleair_master.rds"
-# saveRDS(purpleair_todate, out_master)
-
-# Quick sanity checks
-range(purpleair_todate$timestamp)
-table(is.na(purpleair_todate$pm2_5_atm_final))
-
-###########################################################
-## Sensor agreement + completeness using purpleair_todate ##
-###########################################################
-
-# ---- 1) Ensure expected columns exist ----
-# Your cleaned data should already contain:
-# community_id, timestamp, pm2_5_atm_a_, pm2_5_atm_b_, diff, perdiff, pm2_5_atm_final
-
-stopifnot(all(c("community_id","timestamp") %in% names(purpleair_todate)))
-
-# Normalize A/B sensor column names (in case RDS naming differs)
-if (!"pm2_5_atm_a_" %in% names(purpleair_todate) && "pm2_5_atm_a" %in% names(purpleair_todate)) {
-  purpleair_todate$pm2_5_atm_a_ <- purpleair_todate$pm2_5_atm_a
-}
-if (!"pm2_5_atm_b_" %in% names(purpleair_todate) && "pm2_5_atm_b" %in% names(purpleair_todate)) {
-  purpleair_todate$pm2_5_atm_b_ <- purpleair_todate$pm2_5_atm_b
-}
-
-# ---- 2) Compute diff/perdiff if missing ----
-if (!"diff" %in% names(purpleair_todate) && all(c("pm2_5_atm_a_","pm2_5_atm_b_") %in% names(purpleair_todate))) {
-  purpleair_todate$diff <- abs(purpleair_todate$pm2_5_atm_a_ - purpleair_todate$pm2_5_atm_b_)
-}
-if (!"perdiff" %in% names(purpleair_todate) && all(c("pm2_5_atm_a_","pm2_5_atm_b_") %in% names(purpleair_todate))) {
-  purpleair_todate$perdiff <- abs(purpleair_todate$pm2_5_atm_a_ - purpleair_todate$pm2_5_atm_b_) / purpleair_todate$pm2_5_atm_a_
-  purpleair_todate$perdiff <- ifelse(is.infinite(purpleair_todate$perdiff), NA, purpleair_todate$perdiff)
-}
-
-# ---- 3) Compute pm2_5_atm_final only if missing ----
-# (Your cleaning script already makes this, so usually this does nothing.)
-if (!"pm2_5_atm_final" %in% names(purpleair_todate) && all(c("pm2_5_atm_a_","pm2_5_atm_b_","diff","perdiff") %in% names(purpleair_todate))) {
-  purpleair_todate$pm2_5_atm_final <- ifelse(
-    purpleair_todate$pm2_5_atm_a_ <= 100 & purpleair_todate$pm2_5_atm_b_ <= 100 & purpleair_todate$diff < 11,
-    (purpleair_todate$pm2_5_atm_a_ + purpleair_todate$pm2_5_atm_b_) / 2,
-    ifelse(
-      purpleair_todate$pm2_5_atm_a_ > 100 & purpleair_todate$pm2_5_atm_b_ > 100 & purpleair_todate$perdiff < 0.21,
-      (purpleair_todate$pm2_5_atm_a_ + purpleair_todate$pm2_5_atm_b_) / 2,
-      NA
-    )
-  )
-}
-```
-
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-#################################################################
-## Check Summary Stats of Temperature and Relative Humidity    ##
-################################################################
-
-## If temperature is above 120F or Equal to 0, set to NA
-summary(purpleair_todate$current_temp_f)
-
-purpleair_todate$tempf_updated <- ifelse(purpleair_todate$current_temp_f > 120 |purpleair_todate$current_temp_f == 0 , NA, purpleair_todate$current_temp_f )
-
-
-## If relative humidity is above 98 or equal to 0 , set to NA
-
-summary(purpleair_todate$current_humidity)
-
-purpleair_todate$current_humidity <- ifelse(purpleair_todate$current_humidity >= 98 |purpleair_todate$current_humidity == 0 , NA, purpleair_todate$current_humidity )
-```
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-
-
-# Plot distribution of FINAL PM by community  ----
-ggboxplot(purpleair_todate, x = "community_id", y = "pm2_5_atm_final") + rotate_x_text()
-
-```
-
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-###########################################################
-## Completeness (assumes 2-minute logging)                ##
-###########################################################
-
-purpleair_todate_post2001 <- purpleair_todate %>%
-  filter(timestamp >= as.POSIXct("2001-01-01 00:00:00", tz="UTC")) %>%
+purpleair_new_qc <- purpleair_new %>%
+  filter(timestamp >= as.POSIXct("2024-01-01 00:00:00", tz = "UTC")) %>%
   distinct(community_id, timestamp, .keep_all = TRUE)
 
-# Fix known typos
-purpleair_todate_post2001$community_id[purpleair_todate_post2001$community_id == "kadeslo"] <- "kadelso"
-purpleair_todate_post2001$community_id[purpleair_todate_post2001$community_id == "suronause"] <- "suronuase"
+# quick sanity checks
+range(purpleair_full_qc$timestamp, na.rm = TRUE)
+range(purpleair_new_qc$timestamp, na.rm = TRUE)
+table(is.na(purpleair_full_qc$pm2_5_atm_final))
 
-# Split by community
-purpleair_list <- split(purpleair_todate_post2001, f = purpleair_todate_post2001$community_id)
+```
 
-# Overall completeness
+
+## Full appended dataset summary
+
+### Full-data PM2.5 distribution by community 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggboxplot(purpleair_full_qc, x = "community_id", y = "pm2_5_atm_final") +
+  rotate_x_text() +
+  ggtitle("Full dataset: PM2.5 distribution by community")
+```
+
+
+### Completeness
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+purpleair_list <- split(purpleair_full_qc, f = purpleair_full_qc$community_id)
+
 completeness <- data.frame(community = character(), completeness = numeric())
 
-for(i in seq_along(purpleair_list)) {
+for (i in seq_along(purpleair_list)) {
   df <- purpleair_list[[i]] %>% arrange(timestamp)
-  n <- nrow(df)
-  expected <- as.numeric(difftime(max(df$timestamp), min(df$timestamp), units = "mins"))/2
-  comp <- ifelse(expected > 0, n/expected, NA_real_)
+
+  n <- sum(!is.na(df$pm2_5_atm_final))
+  expected <- as.numeric(difftime(max(df$timestamp), min(df$timestamp), units = "mins")) / 2
+  comp <- ifelse(expected > 0, n / expected, NA_real_)
 
   if (is.nan(comp) | is.infinite(comp)) comp <- NA
   if (!is.na(comp) && comp > 1) comp <- 1
-  completeness <- rbind(completeness, data.frame(community = names(purpleair_list)[i], completeness = comp))
+
+  completeness <- rbind(
+    completeness,
+    data.frame(community = names(purpleair_list)[i], completeness = comp)
+  )
 }
 
-completeness <- completeness %>% mutate(community = fct_reorder(community, desc(completeness)))
+completeness <- completeness %>%
+  mutate(community = fct_reorder(community, desc(completeness)))
 
 ggplot(completeness, aes(x = community, y = completeness)) +
   scale_y_continuous(labels = scales::percent) +
   geom_bar(stat = "identity", fill = "#0072B2", color = "grey30") +
   theme_bw(base_size = 18) +
   rotate_x_text() +
-  ylab("Data Completeness, %") +
+  ylab("PM2.5 Completeness, %") +
   xlab("PurpleAir Community Monitor") +
-  ggtitle("Overall completeness")
+  ggtitle("Overall completeness based on non-missing final PM2.5")
+```
 
-# Completeness by year
-purpleair_todate_post2001$year <- year(purpleair_todate_post2001$timestamp)
+
+### completeness by year
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+purpleair_full_qc$year <- year(purpleair_full_qc$timestamp)
 
 completeness_yr <- data.frame(community = character(), year = integer(), completeness = numeric())
 
-for(yr in sort(unique(purpleair_todate_post2001$year))) {
-  df_yr <- purpleair_todate_post2001 %>% filter(year == yr)
+for (yr in sort(unique(purpleair_full_qc$year))) {
+  df_yr <- purpleair_full_qc %>% filter(year == yr)
   by_comm <- split(df_yr, f = df_yr$community_id)
 
-  for(i in seq_along(by_comm)) {
+  for (i in seq_along(by_comm)) {
     df <- by_comm[[i]] %>% arrange(timestamp)
-    n <- nrow(df)
-    expected <- as.numeric(difftime(max(df$timestamp), min(df$timestamp), units = "mins"))/2
-    comp <- ifelse(expected > 0, n/expected, NA_real_)
+
+    n <- sum(!is.na(df$pm2_5_atm_final))
+    expected <- as.numeric(difftime(max(df$timestamp), min(df$timestamp), units = "mins")) / 2
+    comp <- ifelse(expected > 0, n / expected, NA_real_)
+
     if (is.nan(comp) | is.infinite(comp)) comp <- NA
     if (!is.na(comp) && comp > 1) comp <- 1
-    completeness_yr <- rbind(completeness_yr, data.frame(community = names(by_comm)[i], year = yr, completeness = comp))
+
+    completeness_yr <- rbind(
+      completeness_yr,
+      data.frame(community = names(by_comm)[i], year = yr, completeness = comp)
+    )
   }
 }
 
@@ -215,112 +167,57 @@ ggplot(completeness_yr, aes(x = community, y = completeness)) +
   facet_wrap(~year) +
   theme_bw(base_size = 12) +
   rotate_x_text() +
-  ylab("Data Completeness, %") +
-  xlab("PurpleAir Community Monitor")
-
-
-# Optional: separate year plots (matches old Rmd)
-plot_year <- function(target_year, base_size = 16) {
-  df <- completeness_yr %>%
-    filter(year == target_year) %>%
-    mutate(community = fct_reorder(community, desc(completeness)))
-
-  ggplot(df, aes(x = community, y = completeness)) +
-    scale_y_continuous(labels = scales::percent) +
-    geom_bar(stat = "identity", fill = "#0072B2", color = "grey30") +
-    theme_bw(base_size = base_size) +
-    rotate_x_text() +
-    ylab("Data Completeness, %") +
-    xlab("PurpleAir Community Monitor") +
-    ggtitle(paste0("Year ", target_year))
-}
-
-for (yr in sort(unique(completeness_yr$year))) {
-  print(plot_year(yr))
-}
-
-
-
-# Per-community time series of pm2_5_atm_final (matches old loop)
-for (i in sort(unique(purpleair_todate_post2001$community_id))) {
-  df_i <- purpleair_todate_post2001 %>% filter(community_id == i)
-
-  print(
-    ggplot(df_i, aes(x = timestamp, y = pm2_5_atm_final)) +
-      geom_line() +
-      theme_bw() +
-      ggtitle(paste0("Community: ", i))
-  )
-}
-
+  ylab("PM2.5 Completeness, %") +
+  xlab("PurpleAir Community Monitor") +
+  ggtitle("Yearly completeness based on non-missing final PM2.5")
 ```
 
 
 
+## New data
 
+### Weekly overview 
+
+#### high level overview 
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
-###########################################################
-## A vs B agreement table + plots (uses purpleair_todate) ##
-###########################################################
-
-ab_pairs <- purpleair_todate %>%
-  dplyr::filter(!is.na(pm2_5_atm_a_), !is.na(pm2_5_atm_b_))
-
-sensor_agreement <- ab_pairs %>%
-  dplyr::group_by(community_id) %>%
-  dplyr::summarise(
-    n_pairs = dplyr::n(),
-    corr    = cor(pm2_5_atm_a_, pm2_5_atm_b_, use = "complete.obs"),
-    .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    corr = ifelse(n_pairs >= 10, corr, NA_real_)
-  ) %>%
-  dplyr::left_join(
-    ab_pairs %>%
-      dplyr::group_by(community_id) %>%
-      dplyr::summarise(
-        slope     = coef(lm(pm2_5_atm_b_ ~ pm2_5_atm_a_))[["pm2_5_atm_a_"]],
-        intercept = coef(lm(pm2_5_atm_b_ ~ pm2_5_atm_a_))[["(Intercept)"]],
-        r2        = summary(lm(pm2_5_atm_b_ ~ pm2_5_atm_a_))$r.squared,
-        .groups   = "drop"
-      ),
-    by = "community_id"
-  ) %>%
-  dplyr::mutate(
-    flag_low_n      = n_pairs < 10,
-    flag_low_r2     = !is.na(r2) & r2 < 0.7,
-    flag_slope      = !is.na(slope) & (slope < 0.8 | slope > 1.2),
-    flag_intercept  = !is.na(intercept) & abs(intercept) > 15,
-    any_flag        = flag_low_n | flag_low_r2 | flag_slope | flag_intercept
-  ) %>%
-  dplyr::arrange(dplyr::desc(any_flag), dplyr::desc(n_pairs))
-
-sensor_agreement
-
-
-
+purpleair_new_qc %>%
+  summarise(
+    rows = n(),
+    communities = n_distinct(community_id),
+    start_time = min(timestamp, na.rm = TRUE),
+    end_time = max(timestamp, na.rm = TRUE)
+  )
 ```
 
+#### boxplots 
 
-```{r, echo=FALSE, results="asis", message=FALSE, warning=FALSE, fig.width=7}
-for (i in sort(unique(purpleair_todate$community_id))) {
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggboxplot(purpleair_new_qc, x = "community_id", y = "pm2_5_atm_final") +
+  rotate_x_text() +
+  labs(title = "Weekly upload: PM2.5 distribution by community",
+       subtitle = "Communities with empty boxes indicate no data passed QC checks")
+```
+
+### Summary Plots (Sensor agreement, temp, RH)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for (i in sort(unique(purpleair_new_qc$community_id))) {
   cat(paste0("## Community: ", i, "\n\n"))
 
-  df_all <- purpleair_todate %>% filter(community_id == i)
+  df_all <- purpleair_new_qc %>% filter(community_id == i)
   df_pair <- df_all %>% filter(!is.na(pm2_5_atm_a_), !is.na(pm2_5_atm_b_))
 
-  # A vs B scatter with regression + correlation (paired only)
   if (nrow(df_pair) >= 10) {
     p_scatter <- ggscatter(
       df_pair, x = "pm2_5_atm_a_", y = "pm2_5_atm_b_",
-      add = "reg.line", conf.int = TRUE,
-      cor.coef = TRUE, cor.method = "pearson"
+      add = "reg.line", conf.int = TRUE
     ) +
-      stat_regline_equation() +
-      labs(x = "Sensor A PM2.5", y = "Sensor B PM2.5", title = paste0("Community: ", i))
-
+      labs(
+        x = "Sensor A PM2.5",
+        y = "Sensor B PM2.5",
+        title = paste0("Weekly A vs B agreement: ", i)
+      )
     print(p_scatter)
   } else {
     cat("*Not enough paired A/B observations to plot regression (n < 10).* \n\n")
@@ -328,56 +225,44 @@ for (i in sort(unique(purpleair_todate$community_id))) {
 
   cat("\n\n")
 
-  # Overlaid time series A vs B (keep all rows; gaps are ok)
   p_ts_ab <- ggplot(df_all, aes(x = timestamp)) +
-  geom_line(aes(y = pm2_5_atm_a_, color = "A"), alpha = 0.7) +
-  geom_line(aes(y = pm2_5_atm_b_, color = "B"), alpha = 0.7) +
-  theme_bw() +
-  labs(color = "Sensor",
-       title = paste0("PM2.5 sensors over time: ", i),
-       x = "Date", y = "PM2.5")
+    geom_line(aes(y = pm2_5_atm_a_, color = "A"), alpha = 0.7) +
+    geom_line(aes(y = pm2_5_atm_b_, color = "B"), alpha = 0.7) +
+    theme_bw() +
+    labs(
+      color = "Sensor",
+      title = paste0("Weekly PM2.5 sensors over time: ", i),
+      x = "Date",
+      y = "PM2.5"
+    )
   print(p_ts_ab)
   cat("\n\n")
 
   p_temp <- ggplot(df_all, aes(x = timestamp, y = tempf_updated)) +
     geom_line(alpha = 0.7) +
     theme_bw() +
-    labs(title = paste0("Temperature (F): ", i), x = "Date", y = "Temp (F)")
+    labs(
+      title = paste0("Weekly temperature (F): ", i),
+      x = "Date",
+      y = "Temp (F)"
+    )
   print(p_temp)
   cat("\n\n")
 
-  p_rh <- ggplot(df_all, aes(x = timestamp, y = current_humidity)) +
+  p_rh <- ggplot(df_all, aes(x = timestamp, y = rh_updated)) +
     geom_line(alpha = 0.7) +
     theme_bw() +
-    labs(title = paste0("Relative Humidity (%): ", i), x = "Date", y = "RH (%)")
+    labs(
+      title = paste0("Weekly relative humidity (%): ", i),
+      x = "Date",
+      y = "RH (%)"
+    )
   print(p_rh)
   cat("\n\n***\n\n")
 }
 ```
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-# Final export dataset (mirrors old Rmd)
-purpleair_todate_post2001$temp_C <- (purpleair_todate_post2001$tempf_updated - 32) * (5/9)
 
-purpleair_final <- purpleair_todate_post2001 %>%
-  select(community_id, timestamp, pm2_5_atm_final, temp_C, current_humidity) %>%
-  filter(complete.cases(community_id, timestamp, pm2_5_atm_final))
 
-# Rename columns to match legacy export
-names(purpleair_final)[names(purpleair_final) == "community_id"] <- "nodeId"
-names(purpleair_final)[names(purpleair_final) == "pm2_5_atm_final"] <- "pm2_5_atm"
-names(purpleair_final)[names(purpleair_final) == "temp_C"] <- "current_temp_f" #rename here convert below
 
-# Convert temp back to F for output (as old Rmd did)
-purpleair_final$current_temp_f <- (purpleair_final$current_temp_f * (9/5)) + 32
-
-# Write CSV (choose path)
-out_dir <- "/Users/lewiswhite/CHAP_columbia/GRAPHS/exposure_analysis/weekly_data_checks/purpleair/clean_PA_summaries/"
-out_csv <- file.path(out_dir, paste0("purpleair_final_", Sys.Date(), ".csv"))
-out_rds <- file.path(out_dir, paste0("purpleair_final_", Sys.Date(), ".rds"))
-
-write_csv(purpleair_final, out_csv)
-saveRDS(purpleair_final, out_rds)
-
-```
 
